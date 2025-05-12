@@ -7,6 +7,7 @@ from sqlmodel import select
 from aiogram.fsm.context import FSMContext
 from aiogram import Bot
 from student_flow.survey_handlers import SurveyResponseStates
+from utils.auth_checks import get_user_role, set_commands_for_user
 
 from db import async_session
 from models import Student
@@ -84,6 +85,8 @@ async def cmd_start(msg: Message, state: FSMContext, bot: Bot):
             # Avoid sending error message on /start if DB fails
 
     # Send welcome message regardless of DB outcome
+    role = await get_user_role(user_id, username)
+    await set_commands_for_user(bot, user_id, role)
     await msg.answer(
         "👋 Добро пожаловать в Feedback Bot! Используйте /help для просмотра доступных команд."
     )

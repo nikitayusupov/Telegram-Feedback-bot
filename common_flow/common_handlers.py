@@ -7,7 +7,7 @@ from aiogram import Bot
 from student_flow.survey_handlers import SurveyResponseStates # Import the state
 
 # Import checkers from other flows
-from utils.auth_checks import is_admin # Use centralized check
+from utils.auth_checks import is_admin, get_user_role, set_commands_for_user # Use centralized check
 # Import models and session for DB check
 from db import async_session
 from models import Curator
@@ -46,6 +46,9 @@ async def cmd_help(msg: Message, state: FSMContext, bot: Bot): # Add state and b
     # --- End state cancellation ---
 
     user_is_admin = is_admin(user_id, username)
+    # --- Установка команд в меню под роль пользователя ---
+    role = await get_user_role(user_id, username)
+    await set_commands_for_user(bot, user_id, role)
     
     # --- Async DB Check for Curator --- 
     user_is_curator = False

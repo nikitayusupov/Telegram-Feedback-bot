@@ -33,8 +33,15 @@ class Settings(BaseSettings):
     # ── Google Sheets ─────────────────────────────────────────
     gsheet_id: str = Field(..., env="GSHEET_ID")
     google_credentials_path: str = Field(
-        "credentials.json", env="GOOGLE_CREDENTIALS_PATH"
+        "/Users/nikitayusupov/Desktop/sd_feedback_bot/Telegram-Feedback-bot/gen-lang-client-0435735157-04b6dc045b7b.json", env="GOOGLE_CREDENTIALS_PATH"
     )
+    
+    # Default hardcoded values if not set in .env
+    gsheet_url: str = Field(
+        "https://docs.google.com/spreadsheets/d/1WIVam6ODzM0KHqmvb2b0yXCrnX41Juy6fMC7axnqv7U/edit?gid=0#gid=0", 
+        env="GSHEET_URL"
+    )
+    gsheet_tab_name: str = Field("feedback", env="GSHEET_TAB_NAME")
 
     # ── Pydantic config ───────────────────────────────────────
     model_config = SettingsConfigDict(
@@ -64,10 +71,13 @@ class Settings(BaseSettings):
         return acc
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:  # lazy singleton
+@lru_cache()
+def get_settings() -> Settings:
+    """
+    Returns a cached instance of Settings.
+    """
     return Settings()
 
 
 # convenient shortcut so other modules can just `from config import settings`
-settings: Settings = get_settings()
+settings = get_settings()

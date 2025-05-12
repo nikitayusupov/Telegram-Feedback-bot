@@ -3,9 +3,12 @@ import logging
 import inspect
 from typing import Optional
 
-from aiogram.types import Message
+from aiogram.types import Message, BotCommand, BotCommandScopeChat
 
 from config import settings
+from db import async_session
+from models import Curator
+from sqlmodel import select
 
 logger = logging.getLogger(__name__)
 
@@ -77,3 +80,51 @@ def admin_guard(handler):
             return
 
     return wrapper 
+
+async def get_user_role(user_id: int, username: str | None) -> str:
+    """
+    Возвращает роль пользователя: 'admin', 'curator', 'student'.
+    """
+    if is_admin(user_id, username):
+        return "admin"
+    if username:
+        db_username = username.lower().lstrip('@')
+        async with async_session() as session:
+            result = await session.execute(
+                select(Curator).where(Curator.tg_username == db_username)
+            )
+            if result.scalars().first():
+                return "curator"
+    return "student" 
+
+async def set_commands_for_user(bot, user_id: int, role: str):
+    student_cmds = [
+        BotCommand(command="start", description="Начать/Перезапустить бота"),
+        BotCommand(command="help", description="Показать справку"),
+        BotCommand(command="feedback", description="Отправить отзыв"),
+    ]
+    curator_cmds = student_cmds + [
+        BotCommand(command="set_group", description="Создать группу"),
+        BotCommand(command="list_groups", description="Список групп для курса"),
+        BotCommand(command="set_recipients", description="Задать состав группы"),
+        BotCommand(command="set_questions", description="Задать вопросы для опроса"),
+        BotCommand(command="send_now", description="Отправить опрос группе"),
+    ]
+    admin_cmds = curator_cmds + [
+        BotCommand(command="list_courses", description="Список всех курсов"),
+        BotCommand(command="create_course", description="Создать новый курс"),
+        BotCommand(command="delete_course", description="Удалить курс"),
+        BotCommand(command="add_curator", description="Добавить куратора к курсу"),
+    ]
+
+    if role == "admin":
+        commands = admin_cmds
+    elif role == "curator":
+        commands = curator_cmds
+    else:
+        commands = student_cmds
+
+    await bot.set_my_commands(
+        commands=commands,
+        scope=BotCommandScopeChat(chat_id=user_id)
+    ) 

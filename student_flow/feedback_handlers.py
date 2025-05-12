@@ -12,6 +12,13 @@ from sqlmodel import select
 # If async_session and Feedback model are used here, add these imports:
 from db import async_session
 from models import Feedback, Course
+from utils.sheets import GoogleSheetsManager
+from config import settings
+
+# Use settings from config
+GOOGLE_SHEETS_URL = settings.gsheet_url
+GOOGLE_SHEET_TAB_NAME = settings.gsheet_tab_name
+GOOGLE_SHEET_CREDENTIALS_PATH = settings.google_credentials_path
 
 import logging
 logger = logging.getLogger(__name__)
@@ -20,6 +27,12 @@ from utils.keyboards import get_course_selection_keyboard
 # Import the constant
 from utils.constants import NO_COURSES_FOUND
 
+# Initialize Google Sheets manager
+sheets_manager = GoogleSheetsManager(
+    creds_path=GOOGLE_SHEET_CREDENTIALS_PATH,
+    spreadsheet_url=GOOGLE_SHEETS_URL,
+    sheet_name=GOOGLE_SHEET_TAB_NAME
+)
 
 # FSM States for Feedback
 class FeedbackStates(StatesGroup):
@@ -125,14 +138,29 @@ async def feedback_save(msg: Message, state: FSMContext):
             course_name = course.name
             
         # Create denormalized Feedback object
-        s.add(
-            Feedback(
-                student_tg_id=user_id, 
-                student_tg_username=db_username,
-                course_name=course_name,
-                topic=topic,
-                text=msg.text.strip(),
-            )
+        feedback = Feedback(
+            student_tg_id=user_id, 
+            student_tg_username=db_username,
+            course_name=course_name,
+            topic=topic,
+            text=msg.text.strip(),
         )
+        s.add(feedback)
         await s.commit()
+        
+        # After successful DB save, also save to Google Sheets
+        feedback_data = {
+            "timestamp": feedback.created_at,
+            "student_username": db_username,
+            "course_name": course_name,
+            "topic": topic,
+            "text": msg.text.strip()
+        }
+        
+        # Save to Google Sheets asynchronously
+        sheets_result = await sheets_manager.add_feedback(feedback_data)
+        if not sheets_result:
+            logger.error(f"Failed to save feedback to Google Sheets for user {user_id}")
+            # We don't notify the user of this error since the DB save was successful
+    
     await msg.answer("Спасибо! Отзыв записан ✅", reply_markup=ReplyKeyboardRemove()) 

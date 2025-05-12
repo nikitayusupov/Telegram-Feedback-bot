@@ -6,6 +6,6 @@ pydantic>=2.6
 sqlalchemy[asyncio]>=2.0
 pydantic-settings>=2.2
 gspread_asyncio>=1.7
-
+gspread
 # --- DB Drivers ---
 asyncpg>=0.29
