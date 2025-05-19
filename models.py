@@ -91,7 +91,7 @@ class GroupStudent(SQLModel, table=True):
 
 class Question(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    group_id: int = Field(foreign_key="group.id")
+    survey_id: int = Field(foreign_key="survey.id")
     text: str
     q_type: QuestionType = Field(sa_column_kwargs={"default": QuestionType.scale})
     order: int
@@ -100,6 +100,7 @@ class Question(SQLModel, table=True):
 class Survey(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     group_id: int = Field(foreign_key="group.id")
+    title: str = Field(default="", max_length=1000)
     started_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(TIMESTAMP(timezone=True), nullable=False)
@@ -113,6 +114,7 @@ class Response(SQLModel, table=True):
     student_tg_username: str = Field(default="")
     course_name: str = Field(default="")
     group_name: str = Field(default="")
+    survey_title: str = Field(default="")
     question_text: str = Field(default="")
     question_type: QuestionType
     answer: str

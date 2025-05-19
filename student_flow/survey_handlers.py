@@ -8,7 +8,7 @@ from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from sqlmodel import select
 
 from db import async_session
-from models import Student, Response, Question, QuestionType, Group, Course
+from models import Student, Response, Question, QuestionType, Group, Course, Survey
 # Import the keyboard functions we might need
 from utils.keyboards import get_scale_keyboard, get_skip_keyboard
 
@@ -20,7 +20,7 @@ SKIPPED_ANSWER = "[SKIPPED]"
 
 # ----- FSM States for Student receiving survey -----
 class SurveyResponseStates(StatesGroup):
-    awaiting_answer = State()
+    answering = State()
 
 # ----- Helper: Get Student ID -----
 async def get_student_id(user_id: int) -> int | None:
@@ -36,11 +36,14 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
     data = await state.get_data()
     survey_id = data.get("survey_id")
     question_id = data.get("current_question_id")
-    group_id = data.get("group_id") # Make sure group_id is stored in state
+    survey_title = data.get("survey_title", "")
+    course_name = data.get("course_name", "")
+    group_name = data.get("group_name", "")
+    question_type = data.get("question_type")
     
     # Ensure all necessary context is present
-    if not survey_id or not question_id or not group_id:
-        logger.error(f"Missing survey_id/question_id/group_id in state for user {user_id} during save_response")
+    if not survey_id or not question_id:
+        logger.error(f"Missing survey_id/question_id in state for user {user_id} during save_response")
         return False # Indicate failure
 
     async with async_session() as session:
@@ -53,63 +56,53 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
                  logger.error(f"Cannot find Student with tg_user_id {user_id} for survey {survey_id}. Aborting response save.")
                  return False
 
-            # Fetch necessary data for denormalization
+            # Fetch the question to get its text
             question = await session.get(Question, question_id)
             if not question:
                 logger.error(f"Cannot find Question {question_id} for survey {survey_id}, user {user_id}. Aborting response save.")
                 return False
-            
-            group = await session.get(Group, group_id)
-            if not group:
-                logger.error(f"Cannot find Group {group_id} for survey {survey_id}, user {user_id}. Aborting response save.")
-                return False
-                
-            course = await session.get(Course, group.course_id)
-            if not course:
-                # Less critical, maybe log warning and use placeholder?
-                logger.warning(f"Cannot find Course {group.course_id} for group {group_id}, survey {survey_id}, user {user_id}. Using placeholder name.")
-                course_name = f"[Deleted Course ID: {group.course_id}]"
-            else:
-                course_name = course.name
 
             # Create the denormalized Response object
             new_response = Response(
                 survey_id=survey_id,
                 student_tg_id=user_id,
-                student_tg_username=student_username, # Add username
+                student_tg_username=student_username,
                 course_name=course_name,
-                group_name=group.name,
+                group_name=group_name,
+                survey_title=survey_title,
                 question_text=question.text,
-                question_type=question.q_type,
+                question_type=question_type or question.q_type,
                 answer=answer_text.strip()
                 # answered_at is handled by default_factory
             )
             session.add(new_response)
             await session.commit()
-            logger.info(f"Saved denormalized response for survey {survey_id}, user {user_id}, question ID {question_id} (Text: '{question.text[:20]}...').")
+            logger.info(f"Saved response for survey {survey_id} '{survey_title}', user {user_id}, question ID {question_id}.")
             return True # Indicate success
         except Exception as e:
-            logger.exception(f"Failed to save denormalized response for survey {survey_id}, user {user_id}, question {question_id}: {e}")
+            logger.exception(f"Failed to save response for survey {survey_id}, user {user_id}, question {question_id}: {e}")
             await session.rollback()
             return False # Indicate failure
 
 # ----- Helper: Send Next Question or Complete -----
 async def send_next_question_or_complete(bot: Bot, state: FSMContext, user_id: int):
     data = await state.get_data()
-    group_id = data.get("group_id")
-    current_order = data.get("current_question_order")
+    survey_id = data.get("survey_id")
+    question_order = data.get("question_order", 1)
+    survey_title = data.get("survey_title", "")
+    course_name = data.get("course_name", "")
     
-    if group_id is None or current_order is None:
-        logger.error(f"Missing group_id or current_question_order in state for user {user_id} during send_next_question")
+    if survey_id is None or question_order is None:
+        logger.error(f"Missing survey_id or question_order in state for user {user_id} during send_next_question")
         await bot.send_message(user_id, "Произошла ошибка при получении следующего вопроса. Пожалуйста, свяжитесь с куратором.")
         await state.clear()
         return
         
-    next_order = current_order + 1
+    next_order = question_order + 1
     
     async with async_session() as session:
         stmt = select(Question).where(
-            Question.group_id == group_id,
+            Question.survey_id == survey_id,
             Question.order == next_order
         ).order_by(Question.order) # Ensure order just in case
         result = await session.execute(stmt)
@@ -118,127 +111,100 @@ async def send_next_question_or_complete(bot: Bot, state: FSMContext, user_id: i
     if next_question:
         # Send next question
         question_text = next_question.text
-        reply_markup = None
+        
+        # Create message text with survey title and course name
+        message_text = f"📊 <b>Опрос '{survey_title}' по курсу '{course_name}'</b>\n\n<b>Вопрос {next_order}:</b> {question_text}"
+        
+        # Select keyboard based on question type
         if next_question.q_type == QuestionType.scale:
-            reply_markup = get_scale_keyboard().as_markup()
+            keyboard = get_scale_keyboard()
+            message_text += "\n\nОцените по шкале от 1 до 10:"
         else: # Text question
-            reply_markup = get_skip_keyboard().as_markup()
+            keyboard = get_skip_keyboard()
+            message_text += "\n\nВведите ваш ответ или нажмите «Пропустить»:"
             
-        # Construct the text first
-        message_text = f"Вопрос {next_order}:\n{question_text}"
-        # Capture the sent message object
+        # Send the message
         sent_message = await bot.send_message(
             chat_id=user_id, 
-            text=message_text, # Use the constructed text
-            reply_markup=reply_markup
+            text=message_text,
+            reply_markup=keyboard.as_markup()
         )
-        # Update state for the *new* current question AND the new message ID
+        
+        # Update state for the next question
         await state.update_data(
             current_question_id=next_question.id,
-            current_question_order=next_question.order,
-            last_question_message_id=sent_message.message_id # Update message ID
+            question_type=next_question.q_type,
+            question_order=next_order
         )
-        logger.info(f"Sent question {next_order} (ID: {next_question.id}) to user {user_id}, message ID {sent_message.message_id}.")
+        logger.info(f"Sent question {next_order} (ID: {next_question.id}) to user {user_id}.")
     else:
-        await bot.send_message(user_id, "Спасибо! Опрос завершен. ✅", reply_markup=ReplyKeyboardRemove())
+        await bot.send_message(user_id, f"Спасибо! Опрос '{survey_title}' завершен. ✅", reply_markup=ReplyKeyboardRemove())
         await state.clear()
-        logger.info(f"Survey completed for user {user_id} (last question order: {current_order})")
+        logger.info(f"Survey completed for user {user_id} (last question order: {question_order})")
 
 # ----- Handlers -----
 
 # Handler for SCALE answers (Callback Query)
-@router.callback_query(SurveyResponseStates.awaiting_answer, F.data.startswith("survey_answer:"))
+@router.callback_query(SurveyResponseStates.answering, F.data.startswith("survey_answer:"))
 async def handle_scale_answer(callback: CallbackQuery, state: FSMContext, bot: Bot):
     try:
         answer = callback.data.split(":")[1]
         user_id = callback.from_user.id
-        data = await state.get_data() # Get state data
-        last_msg_id = data.get("last_question_message_id") # Get message ID to delete
         
         # Attempt to save the response
         if await save_response(state, user_id, answer):
-            # If saved, try deleting previous question message
-            if last_msg_id:
-                try:
-                    await bot.delete_message(chat_id=user_id, message_id=last_msg_id)
-                    logger.info(f"Deleted previous question message {last_msg_id} for user {user_id} after scale answer.")
-                except Exception as e:
-                    logger.warning(f"Could not delete previous question message {last_msg_id} for user {user_id}: {e}")
+            # Let the user know their answer was recorded
+            await callback.answer("Ответ записан", show_alert=False)
             # Send the next question or complete
             await send_next_question_or_complete(bot, state, user_id)
         else:
             # Saving failed (error already logged), inform user and clear state
             await callback.message.edit_text("Произошла ошибка при сохранении вашего ответа. Попробуйте позже или свяжитесь с куратором.", reply_markup=None)
             await state.clear()
-            
-        await callback.answer() # Acknowledge button press
-            
+            await callback.answer("Ошибка сохранения", show_alert=True)
     except (IndexError, ValueError):
         logger.warning(f"Invalid callback data received for scale answer: {callback.data}")
         await callback.answer("Ошибка: Некорректный ответ.", show_alert=True)
 
 # Handler for SKIP button (Callback Query)
-@router.callback_query(SurveyResponseStates.awaiting_answer, F.data == "survey_action:skip")
+@router.callback_query(SurveyResponseStates.answering, F.data == "survey_action:skip")
 async def handle_skip_button(callback: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = callback.from_user.id
-    data = await state.get_data()
-    last_msg_id = data.get("last_question_message_id")
     
     if await save_response(state, user_id, SKIPPED_ANSWER):
-        # If saved, try deleting previous question message
-        if last_msg_id:
-            try:
-                await bot.delete_message(chat_id=user_id, message_id=last_msg_id)
-                logger.info(f"Deleted previous question message {last_msg_id} for user {user_id} after skip button.")
-            except Exception as e:
-                logger.warning(f"Could not delete previous question message {last_msg_id} for user {user_id}: {e}")
+        await callback.answer("Вопрос пропущен", show_alert=False)
         # Send next question or complete
         await send_next_question_or_complete(bot, state, user_id)
     else:
         await callback.message.edit_text("Произошла ошибка при обработке пропуска. Попробуйте позже или свяжитесь с куратором.", reply_markup=None)
         await state.clear()
-        
-    await callback.answer("Вопрос пропущен")
+        await callback.answer("Ошибка обработки", show_alert=True)
 
-# Handler for TEXT answers (Message)
-@router.message(SurveyResponseStates.awaiting_answer, F.text)
+# Handler for TEXT answers (Messages)
+@router.message(SurveyResponseStates.answering, F.text)
 async def handle_text_answer(message: Message, state: FSMContext, bot: Bot):
-    answer = message.text
     user_id = message.from_user.id
-    data = await state.get_data()
-    last_msg_id = data.get("last_question_message_id")
+    answer_text = message.text
     
-    if await save_response(state, user_id, answer):
-        # If saved, try deleting previous question message
-        if last_msg_id:
-            try:
-                await bot.delete_message(chat_id=user_id, message_id=last_msg_id)
-                logger.info(f"Deleted previous question message {last_msg_id} for user {user_id} after text answer.")
-            except Exception as e:
-                logger.warning(f"Could not delete previous question message {last_msg_id} for user {user_id}: {e}")
+    # Make sure this is a valid answer (not empty, not a command)
+    if not answer_text or answer_text.startswith('/'):
+        await message.answer("Пожалуйста, введите текстовый ответ или нажмите кнопку «Пропустить».")
+        return
+    
+    if await save_response(state, user_id, answer_text):
         # Send next question or complete
         await send_next_question_or_complete(bot, state, user_id)
     else:
         await message.answer("Произошла ошибка при сохранении вашего ответа. Попробуйте позже или свяжитесь с куратором.")
         await state.clear()
 
-# Handler for /skip command
-@router.message(SurveyResponseStates.awaiting_answer, Command("skip"))
+# Handler for /skip command as alternative to button
+@router.message(SurveyResponseStates.answering, Command("skip"))
 async def handle_skip_command(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
-    data = await state.get_data()
-    last_msg_id = data.get("last_question_message_id")
     
     if await save_response(state, user_id, SKIPPED_ANSWER):
-        # If saved, try deleting previous question message
-        if last_msg_id:
-            try:
-                await bot.delete_message(chat_id=user_id, message_id=last_msg_id)
-                logger.info(f"Deleted previous question message {last_msg_id} for user {user_id} after /skip command.")
-            except Exception as e:
-                logger.warning(f"Could not delete previous question message {last_msg_id} for user {user_id}: {e}")
-        # Send confirmation and next question/complete
-        await message.answer("Вопрос пропущен.") # Keep confirmation for command
+        # Send next question or complete
         await send_next_question_or_complete(bot, state, user_id)
     else:
         await message.answer("Произошла ошибка при обработке пропуска. Попробуйте позже или свяжитесь с куратором.")

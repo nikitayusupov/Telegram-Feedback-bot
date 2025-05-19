@@ -74,9 +74,14 @@ async def cmd_help(msg: Message, state: FSMContext, bot: Bot): # Add state and b
         "  Работа с группами:\n"
         "    /set_group - Создать новую группу\n"
         "    /list_groups - Посмотреть список групп\n"
-        "  Работа с опросами:\n"
         "    /set_recipients - Задать список студентов группы\n"
-        "    /set_questions - Создать опрос для группы\n"
+        "    /list_recipients - Посмотреть список студентов группы\n"
+        "    /add_recipient - Добавить студента в группу\n"
+        "    /delete_recipient - Удалить студентов из группы\n"
+        "  Работа с опросами:\n"
+        "    /set_questions - Задать вопросы для опроса\n"
+        "    /list_surveys - Посмотреть список опросов\n"
+        "    /create_survey - Создать новый опрос\n"
         "    /send_now - Отправить опрос группе"
     )
     admin_cmds = (

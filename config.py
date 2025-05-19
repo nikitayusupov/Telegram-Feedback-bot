@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     bot_token: str = Field(..., env="BOT_TOKEN")
     admins: str = Field(default="", env="ADMINS")
 
+    db_user: str = Field(default="", env="DB_USER")
+    db_user_pwd: str = Field(default="", env="DB_USER_PWD")
+
     # ── Persistence ───────────────────────────────────────────
     database_url: str = Field(
         "postgresql+asyncpg://user:password@host:port/dbname", env="DATABASE_URL"

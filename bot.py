@@ -35,6 +35,8 @@ from curator_flow import recipients_handlers as curator_recipients_router
 from curator_flow import question_handlers as curator_question_router
 # Import curator send survey router
 from curator_flow import send_survey_handlers as curator_send_survey_router
+# Import list surveys router
+from curator_flow import list_surveys_handlers as curator_list_surveys_router
 # Import student survey handlers router
 from student_flow import survey_handlers as student_survey_router
 
@@ -72,13 +74,19 @@ async def async_main():
         BotCommand(command="set_group", description="👥 Создать группу"),
         BotCommand(command="list_groups", description="📄 Список групп для курса"),
         BotCommand(command="set_recipients", description="👤 Задать состав группы"),
+        BotCommand(command="list_recipients", description="📋 Показать список студентов в группе"),
+        BotCommand(command="add_recipient", description="➕ Добавить студента в группу"),
+        BotCommand(command="delete_recipient", description="🗑️ Удалить студента из группы"),
         BotCommand(command="set_questions", description="❓ Задать вопросы для опроса"),
+        BotCommand(command="create_survey", description="📝 Создать новый опрос"),
+        BotCommand(command="list_surveys", description="📊 Показать список опросов группы"),
         BotCommand(command="send_now", description="▶️ Отправить опрос группе")
     ]
     admin_commands = [
         BotCommand(command="list_courses", description="📚 Список всех курсов"),
         BotCommand(command="create_course", description="➕ Создать новый курс"),
         BotCommand(command="delete_course", description="🗑️ Удалить курс"),
+        BotCommand(command="cleanup_surveys", description="🧹 Очистить опросы без названия"),
     ]
 
     # Set commands for all private chats (simplest approach first)
@@ -96,6 +104,7 @@ async def async_main():
     dp.include_router(curator_recipients_router.router)
     dp.include_router(curator_question_router.router) # Include question router
     dp.include_router(curator_send_survey_router.router) # Include send survey router
+    dp.include_router(curator_list_surveys_router.router) # Include list surveys router
     dp.include_router(student_survey_router.router) # Include student survey router
     # Add other routers here as you create them
 

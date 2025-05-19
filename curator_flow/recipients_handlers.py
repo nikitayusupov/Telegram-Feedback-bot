@@ -24,6 +24,23 @@ class SetRecipientsStates(StatesGroup):
     selecting_group = State()
     entering_usernames = State()
 
+# FSM States for list_recipients command
+class ListRecipientsStates(StatesGroup):
+    selecting_course = State()
+    selecting_group = State()
+
+# FSM States for delete_recipient command
+class DeleteRecipientStates(StatesGroup):
+    selecting_course = State()
+    selecting_group = State()
+    selecting_student = State()
+
+# FSM States for add_recipient command
+class AddRecipientStates(StatesGroup):
+    selecting_course = State()
+    selecting_group = State()
+    entering_username = State()
+
 # ----- Command Handler -----
 @router.message(Command("set_recipients"))
 @curator_guard
@@ -293,4 +310,391 @@ async def set_recipients_usernames_entered(msg: Message, state: FSMContext):
          summary_lines.append("\nℹ️ Группа теперь пуста.")
 
     await msg.answer("\n".join(summary_lines))
+    await state.clear()
+
+# ----- List Recipients Command -----
+@router.message(Command("list_recipients"))
+@curator_guard
+async def list_recipients_start(msg: Message, state: FSMContext):
+    """Starts the flow to list recipients of a group."""
+    # Cancel previous operation if any
+    current_state = await state.get_state()
+    if current_state is not None:
+        logger.info(f"User {msg.from_user.id} initiated /list_recipients, cancelling previous state: {current_state}")
+        await state.clear()
+        await msg.answer("(Предыдущая операция отменена)")
+        
+    builder = await get_course_selection_keyboard(callback_prefix="lr_select_course")
+    if builder is None:
+        await msg.answer(NO_COURSES_FOUND)
+        return
+
+    await msg.answer("1/2: Выберите курс:", reply_markup=builder.as_markup())
+    await state.set_state(ListRecipientsStates.selecting_course)
+
+@router.callback_query(ListRecipientsStates.selecting_course, F.data.startswith("lr_select_course:"))
+async def list_recipients_course_selected(callback: CallbackQuery, state: FSMContext):
+    """Handles course selection and shows group keyboard."""
+    try:
+        course_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка выбора курса.", show_alert=True)
+        await state.clear()
+        return
+
+    # Show group keyboard for the selected course
+    group_builder = await get_group_selection_keyboard(course_id, callback_prefix="lr_select_group")
+    if group_builder is None:
+        await callback.message.edit_text("В этом курсе нет групп. Сначала создайте группу командой /set_group.")
+        await callback.answer()
+        await state.clear()
+        return
+
+    await state.update_data(course_id=course_id)
+    await callback.message.edit_text("2/2: Выберите группу:", reply_markup=group_builder.as_markup())
+    await state.set_state(ListRecipientsStates.selecting_group)
+    await callback.answer()
+
+@router.callback_query(ListRecipientsStates.selecting_group, F.data.startswith("lr_select_group:"))
+async def list_recipients_group_selected(callback: CallbackQuery, state: FSMContext):
+    """Handles group selection and displays the list of students in the group."""
+    try:
+        group_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка выбора группы.", show_alert=True)
+        await state.clear()
+        return
+        
+    async with async_session() as session:
+        # Get group name
+        group = await session.get(Group, group_id)
+        if not group:
+            await callback.answer("Выбранная группа не найдена.", show_alert=True)
+            await state.clear()
+            return
+            
+        # Get students in the group
+        students_query = (
+            select(Student)
+            .join(GroupStudent, Student.id == GroupStudent.student_id)
+            .where(GroupStudent.group_id == group_id)
+            .order_by(Student.tg_username)
+        )
+        result = await session.execute(students_query)
+        students = result.scalars().all()
+    
+    # Build response message
+    if students:
+        student_list = "\n".join([f"• @{student.tg_username}" for student in students])
+        response = f"📋 Список студентов группы '{group.name}' ({len(students)}):\n\n{student_list}"
+    else:
+        response = f"Группа '{group.name}' пуста. Добавьте студентов, используя команду /set_recipients."
+    
+    await callback.message.edit_text(response)
+    await callback.answer()
+    await state.clear()
+
+# ----- Delete Recipient Command -----
+@router.message(Command("delete_recipient"))
+@curator_guard
+async def delete_recipient_start(msg: Message, state: FSMContext):
+    """Starts the flow to delete a student from a group."""
+    # Cancel previous operation if any
+    current_state = await state.get_state()
+    if current_state is not None:
+        logger.info(f"User {msg.from_user.id} initiated /delete_recipient, cancelling previous state: {current_state}")
+        await state.clear()
+        await msg.answer("(Предыдущая операция отменена)")
+        
+    builder = await get_course_selection_keyboard(callback_prefix="dr_select_course")
+    if builder is None:
+        await msg.answer(NO_COURSES_FOUND)
+        return
+
+    await msg.answer("1/3: Выберите курс:", reply_markup=builder.as_markup())
+    await state.set_state(DeleteRecipientStates.selecting_course)
+
+@router.callback_query(DeleteRecipientStates.selecting_course, F.data.startswith("dr_select_course:"))
+async def delete_recipient_course_selected(callback: CallbackQuery, state: FSMContext):
+    """Handles course selection and shows group keyboard."""
+    try:
+        course_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка выбора курса.", show_alert=True)
+        await state.clear()
+        return
+
+    # Show group keyboard for the selected course
+    group_builder = await get_group_selection_keyboard(course_id, callback_prefix="dr_select_group")
+    if group_builder is None:
+        await callback.message.edit_text("В этом курсе нет групп. Сначала создайте группу командой /set_group.")
+        await callback.answer()
+        await state.clear()
+        return
+
+    await state.update_data(course_id=course_id)
+    await callback.message.edit_text("2/3: Выберите группу:", reply_markup=group_builder.as_markup())
+    await state.set_state(DeleteRecipientStates.selecting_group)
+    await callback.answer()
+
+@router.callback_query(DeleteRecipientStates.selecting_group, F.data.startswith("dr_select_group:"))
+async def delete_recipient_group_selected(callback: CallbackQuery, state: FSMContext):
+    """Handles group selection and shows student keyboard."""
+    try:
+        group_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка выбора группы.", show_alert=True)
+        await state.clear()
+        return
+        
+    async with async_session() as session:
+        # Get group name
+        group = await session.get(Group, group_id)
+        if not group:
+            await callback.answer("Выбранная группа не найдена.", show_alert=True)
+            await state.clear()
+            return
+            
+        # Get students in the group
+        students_query = (
+            select(Student)
+            .join(GroupStudent, Student.id == GroupStudent.student_id)
+            .where(GroupStudent.group_id == group_id)
+            .order_by(Student.tg_username)
+        )
+        result = await session.execute(students_query)
+        students = result.scalars().all()
+    
+    if not students:
+        await callback.message.edit_text(f"Группа '{group.name}' пуста. Сначала добавьте студентов, используя команду /set_recipients.")
+        await callback.answer()
+        await state.clear()
+        return
+    
+    # Build student selection keyboard
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    
+    builder = InlineKeyboardBuilder()
+    for student in students:
+        builder.add(InlineKeyboardButton(
+            text=f"@{student.tg_username}",
+            callback_data=f"dr_select_student:{group_id}:{student.id}"
+        ))
+    builder.adjust(1)  # One button per row for better readability
+    
+    await state.update_data(group_id=group_id, group_name=group.name)
+    await callback.message.edit_text(
+        f"3/3: Выберите студента для удаления из группы '{group.name}':",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(DeleteRecipientStates.selecting_student)
+    await callback.answer()
+
+@router.callback_query(DeleteRecipientStates.selecting_student, F.data.startswith("dr_select_student:"))
+async def delete_recipient_student_selected(callback: CallbackQuery, state: FSMContext):
+    """Handles student selection and removes the student from the group."""
+    try:
+        parts = callback.data.split(":")
+        group_id = int(parts[1])
+        student_id = int(parts[2])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка выбора студента.", show_alert=True)
+        await state.clear()
+        return
+    
+    data = await state.get_data()
+    group_name = data.get("group_name", "Unknown Group")
+    
+    student_username = ""
+    
+    async with async_session() as session:
+        try:
+            # Get student username for the response message
+            student = await session.get(Student, student_id)
+            if student:
+                student_username = student.tg_username
+            
+            # Delete the link between student and group
+            delete_stmt = delete(GroupStudent).where(
+                GroupStudent.group_id == group_id,
+                GroupStudent.student_id == student_id
+            )
+            result = await session.execute(delete_stmt)
+            await session.commit()
+            
+            if result.rowcount > 0:
+                logger.info(f"Removed student {student_id} (@{student_username}) from group {group_id}")
+                await callback.message.edit_text(
+                    f"✅ Студент @{student_username} удален из группы '{group_name}'."
+                )
+            else:
+                logger.warning(f"No GroupStudent record found for student {student_id} in group {group_id}")
+                await callback.message.edit_text(
+                    f"⚠️ Студент не найден в группе '{group_name}'."
+                )
+        except Exception as e:
+            logger.exception(f"Error deleting student {student_id} from group {group_id}: {e}")
+            await session.rollback()
+            await callback.message.edit_text(
+                f"❌ Ошибка при удалении студента из группы '{group_name}'. Попробуйте позже."
+            )
+    
+    await callback.answer()
+    await state.clear()
+
+# ----- Add Recipient Command -----
+@router.message(Command("add_recipient"))
+@curator_guard
+async def add_recipient_start(msg: Message, state: FSMContext):
+    """Starts the flow to add a student to a group."""
+    # Cancel previous operation if any
+    current_state = await state.get_state()
+    if current_state is not None:
+        logger.info(f"User {msg.from_user.id} initiated /add_recipient, cancelling previous state: {current_state}")
+        await state.clear()
+        await msg.answer("(Предыдущая операция отменена)")
+        
+    builder = await get_course_selection_keyboard(callback_prefix="ar_select_course")
+    if builder is None:
+        await msg.answer(NO_COURSES_FOUND)
+        return
+
+    await msg.answer("1/3: Выберите курс:", reply_markup=builder.as_markup())
+    await state.set_state(AddRecipientStates.selecting_course)
+
+@router.callback_query(AddRecipientStates.selecting_course, F.data.startswith("ar_select_course:"))
+async def add_recipient_course_selected(callback: CallbackQuery, state: FSMContext):
+    """Handles course selection and shows group keyboard."""
+    try:
+        course_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка выбора курса.", show_alert=True)
+        await state.clear()
+        return
+
+    # Show group keyboard for the selected course
+    group_builder = await get_group_selection_keyboard(course_id, callback_prefix="ar_select_group")
+    if group_builder is None:
+        await callback.message.edit_text("В этом курсе нет групп. Сначала создайте группу командой /set_group.")
+        await callback.answer()
+        await state.clear()
+        return
+
+    await state.update_data(course_id=course_id)
+    await callback.message.edit_text("2/3: Выберите группу:", reply_markup=group_builder.as_markup())
+    await state.set_state(AddRecipientStates.selecting_group)
+    await callback.answer()
+
+@router.callback_query(AddRecipientStates.selecting_group, F.data.startswith("ar_select_group:"))
+async def add_recipient_group_selected(callback: CallbackQuery, state: FSMContext):
+    """Handles group selection and prompts for username."""
+    try:
+        group_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка выбора группы.", show_alert=True)
+        await state.clear()
+        return
+        
+    # Verify group exists (optional, but good practice)
+    async with async_session() as session:
+        group = await session.get(Group, group_id)
+        if not group:
+            await callback.answer("Выбранная группа не найдена.", show_alert=True)
+            await state.clear()
+            return
+            
+    await state.update_data(group_id=group_id, group_name=group.name)
+    await callback.message.edit_text(
+        f"3/3: Введите Telegram username студента, которого хотите добавить в группу '{group.name}':\n"
+        "(например, @username)"
+    )
+    await state.set_state(AddRecipientStates.entering_username)
+    await callback.answer()
+
+@router.message(AddRecipientStates.entering_username, F.text)
+async def add_recipient_username_entered(msg: Message, state: FSMContext):
+    """Handles username input and adds the student to the group."""
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    group_name = data.get("group_name", "Unknown Group")
+    course_id = data.get("course_id")
+    
+    if not group_id or not course_id:
+        await msg.answer("Ошибка: Потерян контекст группы или курса. Начните сначала с /add_recipient.")
+        await state.clear()
+        return
+    
+    # Validate username format
+    username_raw = msg.text.strip()
+    if not username_raw.startswith('@') or len(username_raw) <= 1:
+        await msg.answer("Некорректный формат username. Пожалуйста, введите username в формате @username.")
+        return  # Keep state for retry
+    
+    # Extract username without @ and convert to lowercase
+    username = username_raw.lower().lstrip('@')
+    
+    async with async_session() as session:
+        try:
+            # Check if student already exists in the database
+            student_result = await session.execute(
+                select(Student).where(Student.tg_username == username)
+            )
+            student = student_result.scalars().first()
+            
+            if student:
+                # Check if student is already in this group
+                existing_link_result = await session.execute(
+                    select(GroupStudent).where(
+                        GroupStudent.group_id == group_id,
+                        GroupStudent.student_id == student.id
+                    )
+                )
+                existing_link = existing_link_result.scalars().first()
+                
+                if existing_link:
+                    await msg.answer(f"⚠️ Студент @{username} уже состоит в группе '{group_name}'.")
+                    await state.clear()
+                    return
+                
+                # Check if student is in another group of this course
+                other_group_result = await session.execute(
+                    select(GroupStudent, Group)
+                    .join(Group, GroupStudent.group_id == Group.id)
+                    .where(
+                        GroupStudent.student_id == student.id,
+                        Group.course_id == course_id,
+                        GroupStudent.group_id != group_id
+                    )
+                )
+                other_group = other_group_result.first()
+                
+                if other_group:
+                    other_group_name = other_group[1].name
+                    await msg.answer(
+                        f"❌ Студент @{username} уже состоит в группе '{other_group_name}' "
+                        f"в рамках этого курса. Студент может состоять только в одной группе для данного курса."
+                    )
+                    await state.clear()
+                    return
+            else:
+                # Create new student record
+                student = Student(tg_username=username)
+                session.add(student)
+                await session.flush()
+                await session.refresh(student)
+                logger.info(f"Created new student '{username}' with ID {student.id}")
+            
+            # Add student to group
+            new_link = GroupStudent(group_id=group_id, student_id=student.id)
+            session.add(new_link)
+            await session.commit()
+            
+            await msg.answer(f"✅ Студент @{username} успешно добавлен в группу '{group_name}'.")
+        
+        except Exception as e:
+            logger.exception(f"Error adding student to group {group_id}: {e}")
+            await session.rollback()
+            await msg.answer("❌ Произошла ошибка при добавлении студента в группу. Попробуйте позже.")
+    
     await state.clear()

@@ -13,7 +13,7 @@ from sqlmodel import select
 # Assuming curator_guard is correctly defined and imported
 from curator_flow.group_handlers import curator_guard 
 from db import async_session
-from models import Group, Question, QuestionType 
+from models import Group, Question, QuestionType, Survey
 from utils.keyboards import (
     get_course_selection_keyboard, 
     get_group_selection_keyboard,
@@ -28,6 +28,7 @@ router = Router()
 class SetQuestionsStates(StatesGroup):
     selecting_course = State()
     selecting_group = State()
+    selecting_survey = State()
     confirming_overwrite = State() # New state for confirmation
     selecting_question_type = State()
     entering_question_text = State()
@@ -70,12 +71,12 @@ async def save_questions_and_finish(message_or_callback: Union[Message, Callback
     
     data = await state.get_data()
     questions_list: List[Dict[str, Any]] = data.get("questions", [])
-    group_id = data.get("group_id")
-    group_name = data.get("group_name", "Unknown Group")
+    survey_id = data.get("survey_id")
+    survey_title = data.get("survey_title", "Unknown Survey")
 
-    if not group_id:
-        logger.error("Group ID missing in state during save_questions_and_finish")
-        await msg.answer("Ошибка: Потерян ID группы. Начните заново.")
+    if not survey_id:
+        logger.error("Survey ID missing in state during save_questions_and_finish")
+        await msg.answer("Ошибка: Потерян ID опроса. Начните заново.")
         await state.clear()
         return
 
@@ -86,16 +87,16 @@ async def save_questions_and_finish(message_or_callback: Union[Message, Callback
 
     async with async_session() as session:
         try:
-            # 1. Delete existing questions for this group
-            delete_stmt = delete(Question).where(Question.group_id == group_id)
+            # 1. Delete existing questions for this survey
+            delete_stmt = delete(Question).where(Question.survey_id == survey_id)
             await session.execute(delete_stmt)
-            logger.info(f"Deleted existing questions for group ID {group_id}")
+            logger.info(f"Deleted existing questions for survey ID {survey_id}")
 
             # 2. Add new questions
             new_questions = []
             for i, q_data in enumerate(questions_list):
                 new_q = Question(
-                    group_id=group_id,
+                    survey_id=survey_id,
                     text=q_data['text'],
                     q_type=q_data['type'],
                     order=i + 1 # Order is 1-based
@@ -104,11 +105,11 @@ async def save_questions_and_finish(message_or_callback: Union[Message, Callback
                 new_questions.append(new_q)
             
             await session.commit()
-            logger.info(f"Saved {len(new_questions)} questions for group '{group_name}' (ID: {group_id})")
-            await msg.answer(f"✅ Сохранено {len(new_questions)} вопросов для группы '{group_name}'.")
+            logger.info(f"Saved {len(new_questions)} questions for survey '{survey_title}' (ID: {survey_id})")
+            await msg.answer(f"✅ Сохранено {len(new_questions)} вопросов для опроса '{survey_title}'.")
 
         except Exception as e:
-            logger.exception(f"Error saving questions for group {group_id}: {e}")
+            logger.exception(f"Error saving questions for survey {survey_id}: {e}")
             await session.rollback()
             await msg.answer("Произошла ошибка при сохранении вопросов. Попробуйте позже.")
 
@@ -119,7 +120,7 @@ async def save_questions_and_finish(message_or_callback: Union[Message, Callback
 @router.message(Command("set_questions"))
 @curator_guard
 async def set_questions_start(msg: Message, state: FSMContext):
-    """Starts the flow to set questions for a group."""
+    """Starts the flow to set questions for a survey."""
     # Cancel previous operation if any
     current_state = await state.get_state()
     if current_state is not None:
@@ -136,7 +137,7 @@ async def set_questions_start(msg: Message, state: FSMContext):
         await msg.answer(NO_COURSES_FOUND)
         return
 
-    await msg.answer("1/3: Выберите курс:", reply_markup=builder.as_markup())
+    await msg.answer("1/4: Выберите курс:", reply_markup=builder.as_markup())
     await state.set_state(SetQuestionsStates.selecting_course)
 
 @router.callback_query(SetQuestionsStates.selecting_course, F.data.startswith("sq_select_course:"))
@@ -158,13 +159,13 @@ async def set_questions_course_selected(callback: CallbackQuery, state: FSMConte
         return
 
     await state.update_data(course_id=course_id)
-    await callback.message.edit_text("2/3: Выберите группу:", reply_markup=group_builder.as_markup())
+    await callback.message.edit_text("2/4: Выберите группу:", reply_markup=group_builder.as_markup())
     await state.set_state(SetQuestionsStates.selecting_group)
     await callback.answer()
 
 @router.callback_query(SetQuestionsStates.selecting_group, F.data.startswith("sq_select_group:"))
 async def set_questions_group_selected(callback: CallbackQuery, state: FSMContext):
-    """Handles group selection and starts the question adding process or asks for overwrite confirmation."""
+    """Handles group selection and shows available surveys."""
     try:
         group_id = int(callback.data.split(":")[1])
     except (IndexError, ValueError):
@@ -180,34 +181,81 @@ async def set_questions_group_selected(callback: CallbackQuery, state: FSMContex
             await callback.answer()
             await state.clear()
             return
+        
+        # Get available surveys for this group
+        surveys_stmt = select(Survey).where(Survey.group_id == group_id).order_by(Survey.id)
+        surveys_result = await session.execute(surveys_stmt)
+        surveys = surveys_result.scalars().all()
+        
+        if not surveys:
+            # No surveys exist, prompt to create one
+            await callback.message.edit_text(
+                f"Для группы '{group.name}' нет опросов. "
+                "Сначала создайте опрос с помощью команды /create_survey."
+            )
+            await callback.answer()
+            await state.clear()
+            return
+
+    # Build keyboard with available surveys
+    survey_builder = InlineKeyboardBuilder()
+    for survey in surveys:
+        survey_builder.row(InlineKeyboardButton(
+            text=f"{survey.title}",
+            callback_data=f"sq_select_survey:{survey.id}"
+        ))
+    
+    await state.update_data(group_id=group_id, group_name=group.name)
+    await callback.message.edit_text("3/4: Выберите опрос для редактирования вопросов:", reply_markup=survey_builder.as_markup())
+    await state.set_state(SetQuestionsStates.selecting_survey)
+    await callback.answer()
+
+@router.callback_query(SetQuestionsStates.selecting_survey, F.data.startswith("sq_select_survey:"))
+async def set_questions_survey_selected(callback: CallbackQuery, state: FSMContext):
+    """Handles survey selection and checks for existing questions."""
+    try:
+        survey_id = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка выбора опроса.", show_alert=True)
+        await state.clear()
+        return
+        
+    async with async_session() as session:
+        # Verify survey exists and get title
+        survey = await session.get(Survey, survey_id)
+        if not survey:
+            await callback.message.edit_text("Выбранный опрос не найден.")
+            await callback.answer()
+            await state.clear()
+            return
             
         # Check for existing questions
-        existing_questions_stmt = select(Question.id).where(Question.group_id == group_id).limit(1)
+        existing_questions_stmt = select(Question.id).where(Question.survey_id == survey_id).limit(1)
         existing_questions_result = await session.execute(existing_questions_stmt)
         has_existing_questions = existing_questions_result.scalars().first() is not None
 
-    await state.update_data(group_id=group_id, group_name=group.name)
+    await state.update_data(survey_id=survey_id, survey_title=survey.title)
 
     if has_existing_questions:
-        logger.info(f"Group {group.name} (ID: {group_id}) already has questions. Asking for overwrite confirmation.")
+        logger.info(f"Survey '{survey.title}' (ID: {survey_id}) already has questions. Asking for overwrite confirmation.")
         # Ask for confirmation
         confirm_builder = InlineKeyboardBuilder()
         confirm_builder.row(
-            InlineKeyboardButton(text="✅ Да, удалить старый опрос", callback_data="sq_confirm_overwrite:yes"),
+            InlineKeyboardButton(text="✅ Да, удалить старые вопросы", callback_data="sq_confirm_overwrite:yes"),
             InlineKeyboardButton(text="❌ Отмена", callback_data="sq_confirm_overwrite:no")
         )
         await callback.message.edit_text(
-            f"Для группы '{group.name}' уже заданы вопросы. Хотите удалить их и создать новые?",
+            f"Для опроса '{survey.title}' уже заданы вопросы. Хотите удалить их и создать новые?",
             reply_markup=confirm_builder.as_markup()
         )
         await state.set_state(SetQuestionsStates.confirming_overwrite)
         await callback.answer()
     else:
         # No existing questions, proceed directly
-        logger.info(f"Group {group.name} (ID: {group_id}) has no questions. Proceeding to add new ones.")
+        logger.info(f"Survey '{survey.title}' (ID: {survey_id}) has no questions. Proceeding to add new ones.")
         await state.update_data(questions=[]) # Initialize empty list
         # Edit message before starting the flow
-        await callback.message.edit_text(f"3/3: Выбрана группа '{group.name}'. Начинаем добавлять вопросы.")
+        await callback.message.edit_text(f"4/4: Выбран опрос '{survey.title}'. Начинаем добавлять вопросы.")
         # Start asking for the first question (pass callback to edit message)
         await ask_next_question_or_finish(callback, state)
         # No need for callback.answer() here as ask_next_question_or_finish handles it
@@ -219,15 +267,19 @@ async def set_questions_overwrite_confirmed(callback: CallbackQuery, state: FSMC
     action = callback.data.split(":")[1]
 
     if action == "yes":
-        # Correctly await get_data() before calling .get()
-        logger.info(f"User confirmed overwriting questions for group ID: {(await state.get_data()).get('group_id')}") 
+        data = await state.get_data()
+        survey_id = data.get("survey_id")
+        survey_title = data.get("survey_title", "Unknown Survey")
+        logger.info(f"User confirmed overwriting questions for survey '{survey_title}' (ID: {survey_id})")
         await state.update_data(questions=[]) # Initialize empty list for new questions
         # Start asking for the first question, editing the confirmation message
         await ask_next_question_or_finish(callback, state)
     elif action == "no":
-        # Correctly await get_data() before calling .get()
-        logger.info(f"User cancelled overwriting questions for group ID: {(await state.get_data()).get('group_id')}") 
-        await callback.message.edit_text("Создание опроса отменено.")
+        data = await state.get_data()
+        survey_id = data.get("survey_id")
+        survey_title = data.get("survey_title", "Unknown Survey")
+        logger.info(f"User cancelled overwriting questions for survey '{survey_title}' (ID: {survey_id})")
+        await callback.message.edit_text("Редактирование вопросов отменено.")
         await state.clear()
         await callback.answer()
     else:
@@ -248,41 +300,38 @@ async def set_questions_type_selected(callback: CallbackQuery, state: FSMContext
         question_type = QuestionType(action)
         await state.update_data(current_question_type=question_type)
         await state.set_state(SetQuestionsStates.entering_question_text)
-        await callback.message.edit_text("Введите текст вопроса (до 1000 символов):")
+        
+        prompt = "Введите текст вопроса:"
+        if question_type == QuestionType.scale:
+            prompt += " (для шкалы от 1 до 5)"
+        
+        await callback.message.edit_text(prompt)
         await callback.answer()
     except ValueError:
-        logger.warning(f"Invalid question type received: {action}")
+        logger.error(f"Invalid question type received: {action}")
         await callback.answer("Некорректный тип вопроса.", show_alert=True)
 
 @router.message(SetQuestionsStates.entering_question_text, F.text)
 async def set_questions_text_entered(msg: Message, state: FSMContext):
-    """Handles question text input, adds question to list, and asks for next."""
-    question_text = msg.text.strip()
-
-    if not question_text:
-        await msg.answer("Текст вопроса не может быть пустым. Пожалуйста, введите текст.")
-        return # Keep state
-
-    if len(question_text) > 1000:
-        await msg.answer("Текст вопроса слишком длинный (макс. 1000 символов). Пожалуйста, введите короче.")
-        return # Keep state
-
+    """Handles question text input and adds the question to the state."""
     data = await state.get_data()
-    questions_list: List[Dict[str, Any]] = data.get("questions", [])
-    current_question_type = data.get("current_question_type")
-
-    if not current_question_type:
-        logger.error("current_question_type missing from state")
-        await msg.answer("Ошибка: Потерян тип вопроса. Начните заново с /set_questions.")
+    current_type = data.get("current_question_type")
+    questions_list = data.get("questions", [])
+    
+    if not current_type:
+        await msg.answer("Ошибка: Тип вопроса не был выбран. Пожалуйста, начните заново.")
         await state.clear()
         return
-
-    # Add the new question data to the list in state
+    
+    # Add the question to our list
+    question_text = msg.text.strip()
     questions_list.append({
-        "type": current_question_type,
+        "type": current_type,
         "text": question_text
     })
+    
+    # Update state with the new list
     await state.update_data(questions=questions_list)
-
-    # Ask for the next question or offer to finish
+    
+    # Ask for next question or finish
     await ask_next_question_or_finish(msg, state)

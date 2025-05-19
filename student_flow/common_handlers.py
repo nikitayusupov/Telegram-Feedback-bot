@@ -33,7 +33,7 @@ async def cmd_start(msg: Message, state: FSMContext, bot: Bot):
         await msg.answer("(Предыдущая операция отменена)") # Generic cancellation message
         
         # Specific cleanup if it was a survey
-        if state_name == SurveyResponseStates.awaiting_answer:
+        if state_name == SurveyResponseStates.answering:
             last_msg_id = data.get("last_question_message_id")
             if last_msg_id:
                 try:
