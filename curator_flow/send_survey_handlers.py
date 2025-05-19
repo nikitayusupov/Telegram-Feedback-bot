@@ -99,17 +99,6 @@ async def create_survey_group_selected(callback: CallbackQuery, state: FSMContex
             await callback.answer()
             await state.clear()
             return
-        
-        # Проверяем наличие вопросов для этой группы
-        questions_stmt = select(Question).join(Survey, Question.survey_id == Survey.id).where(Survey.group_id == group_id)
-        questions_result = await session.execute(questions_stmt)
-        questions = questions_result.scalars().all()
-        if not questions:
-            logger.warning(f"Survey creation cancelled for group '{group.name}': No questions found.")
-            await callback.message.edit_text(f"⚠️ Невозможно создать опрос для группы '{group.name}': вопросы не заданы. Используйте /set_questions.")
-            await callback.answer()
-            await state.clear()
-            return
 
     # Сохраняем ID группы и имя группы в FSM
     await state.update_data(group_id=group_id, group_name=group.name)
@@ -170,7 +159,8 @@ async def create_survey_title_entered(msg: Message, state: FSMContext):
     
     success_message = (
         f"✅ Опрос '{survey_title}' для группы '{group_name}' успешно создан!\n\n"
-        "Чтобы отправить его студентам, используйте команду /send_now"
+        f"• Добавьте вопросы к опросу с помощью команды /set_questions\n"
+        f"• После добавления вопросов, используйте /send_now для отправки опроса студентам"
     )
     
     await msg.answer(success_message)
