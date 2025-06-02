@@ -21,6 +21,8 @@ from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
 from config import settings
 # Import create_all_tables from db module
 from db import create_all_tables 
+# Import advanced logging configuration
+from utils.logging_config import setup_logging
 
 # --- Import Routers --- 
 from student_flow import common_handlers as student_common_router
@@ -43,18 +45,16 @@ from curator_flow import list_questions_handlers as curator_list_questions_route
 from student_flow import survey_handlers as student_survey_router
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging Setup
 # ---------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO,
-                    format="[%(asctime)s] %(levelname)s:%(name)s:%(message)s")
-logger = logging.getLogger("feedback_bot")
+# Setup advanced logging with daily rotation (file only, no console output)
+logger = setup_logging(log_level=logging.INFO, log_dir="logs", console_output=False)
 
 
 # ---------------------------------------------------------------------------
 # Entrypoint                                                                 
 # ---------------------------------------------------------------------------
 def main():
-    logging.basicConfig(level=logging.INFO)
     asyncio.run(async_main())
 
 async def async_main():
