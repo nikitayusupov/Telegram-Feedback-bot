@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # ── Google Sheets ─────────────────────────────────────────
     gsheet_id: str = Field(..., env="GSHEET_ID")
     google_credentials_path: str = Field(
-        "/Users/nikitayusupov/Desktop/sd_feedback_bot/Telegram-Feedback-bot/gen-lang-client-0435735157-04b6dc045b7b.json", env="GOOGLE_CREDENTIALS_PATH"
+        "gen-lang-client-0435735157-04b6dc045b7b.json", env="GOOGLE_CREDENTIALS_PATH"
     )
     
     # Default hardcoded values if not set in .env
