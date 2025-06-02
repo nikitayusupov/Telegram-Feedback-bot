@@ -175,6 +175,3 @@ cython_debug/
 feedback.db-journal
 feedback.csv
 gen-lang-client-0435735157-04b6dc045b7b.json
-migrate_questions_to_surveys.py
-migrate_*.py
-*migration*.py

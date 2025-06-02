@@ -131,6 +131,7 @@ class Feedback(SQLModel, table=True):
     course_name: str = Field(default="")
     topic: str
     text: str
+    is_anonymous: bool = Field(default=False)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(TIMESTAMP(timezone=True), nullable=False)

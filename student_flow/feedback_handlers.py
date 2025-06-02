@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery, InlineKeyboardButton
 from aiogram import Bot
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from student_flow.survey_handlers import SurveyResponseStates
 from sqlmodel import select
 
@@ -37,6 +38,7 @@ sheets_manager = GoogleSheetsManager(
 # FSM States for Feedback
 class FeedbackStates(StatesGroup):
     selecting_course = State()
+    selecting_anonymity = State()
     topic = State()
     text = State()
 
@@ -84,7 +86,7 @@ async def feedback_begin(msg: Message, state: FSMContext, bot: Bot):
 
 @router.callback_query(FeedbackStates.selecting_course, F.data.startswith("fb_select_course:"))
 async def feedback_course_selected(callback: CallbackQuery, state: FSMContext):
-    """Handles the course selection and asks for the topic."""
+    """Handles the course selection and asks for anonymity preference."""
     try:
         course_id = int(callback.data.split(":")[1])
     except (IndexError, ValueError):
@@ -92,9 +94,37 @@ async def feedback_course_selected(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(course_id=course_id)
-    await state.set_state(FeedbackStates.topic)
+    await state.set_state(FeedbackStates.selecting_anonymity)
     
     await callback.answer("Курс выбран!")
+    
+    # Create anonymity selection keyboard
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="🔒 Анонимно", callback_data="fb_anonymity:anonymous"))
+    builder.add(InlineKeyboardButton(text="👤 С указанием имени", callback_data="fb_anonymity:named"))
+    builder.adjust(1)  # Each button in separate row (full width)
+    
+    await callback.message.edit_text(
+        "Как вы хотите отправить отзыв?",
+        reply_markup=builder.as_markup()
+    )
+
+@router.callback_query(FeedbackStates.selecting_anonymity, F.data.startswith("fb_anonymity:"))
+async def feedback_anonymity_selected(callback: CallbackQuery, state: FSMContext):
+    """Handles anonymity selection and asks for the topic."""
+    try:
+        anonymity_choice = callback.data.split(":")[1]
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка при выборе анонимности.", show_alert=True)
+        return
+
+    is_anonymous = (anonymity_choice == "anonymous")
+    await state.update_data(is_anonymous=is_anonymous)
+    await state.set_state(FeedbackStates.topic)
+    
+    anonymity_text = "анонимно" if is_anonymous else "с указанием имени"
+    await callback.answer(f"Отзыв будет отправлен {anonymity_text}")
+    
     # Edit the original message to remove buttons and ask for topic
     await callback.message.edit_text("Укажите тему для отзыва:")
 
@@ -110,10 +140,11 @@ async def feedback_topic(msg: Message, state: FSMContext):
 
 @router.message(FeedbackStates.text, F.text)
 async def feedback_save(msg: Message, state: FSMContext):
-    """Saves the feedback including the course ID."""
+    """Saves the feedback including the course ID and anonymity preference."""
     data = await state.get_data()
     topic = data.get("topic", "<none>")
     course_id = data.get("course_id")
+    is_anonymous = data.get("is_anonymous", False)
     
     if course_id is None:
         # Should not happen if flow is correct, but handle defensively
@@ -124,8 +155,13 @@ async def feedback_save(msg: Message, state: FSMContext):
     # Get student details
     user_id = msg.from_user.id
     raw_username = msg.from_user.username
-    # Use user ID string as fallback username if none exists
-    db_username = raw_username.lstrip('@') if raw_username else str(user_id) 
+    # Use user ID string as fallback username if none exists, but respect anonymity
+    if is_anonymous:
+        db_username = "Аноним"
+        display_username = "Аноним"
+    else:
+        db_username = raw_username.lstrip('@') if raw_username else str(user_id)
+        display_username = db_username
 
     await state.clear()
     async with async_session() as s:
@@ -139,11 +175,12 @@ async def feedback_save(msg: Message, state: FSMContext):
             
         # Create denormalized Feedback object
         feedback = Feedback(
-            student_tg_id=user_id, 
+            student_tg_id=user_id if not is_anonymous else 0,  # Store 0 for anonymous
             student_tg_username=db_username,
             course_name=course_name,
             topic=topic,
             text=msg.text.strip(),
+            is_anonymous=is_anonymous,
         )
         s.add(feedback)
         await s.commit()
@@ -151,7 +188,7 @@ async def feedback_save(msg: Message, state: FSMContext):
         # After successful DB save, also save to Google Sheets
         feedback_data = {
             "timestamp": feedback.created_at,
-            "student_username": db_username,
+            "student_username": display_username,
             "course_name": course_name,
             "topic": topic,
             "text": msg.text.strip()
@@ -163,4 +200,5 @@ async def feedback_save(msg: Message, state: FSMContext):
             logger.error(f"Failed to save feedback to Google Sheets for user {user_id}")
             # We don't notify the user of this error since the DB save was successful
     
-    await msg.answer("Спасибо! Отзыв записан ✅", reply_markup=ReplyKeyboardRemove()) 
+    anonymity_confirmation = " (анонимно)" if is_anonymous else ""
+    await msg.answer(f"Спасибо! Отзыв записан{anonymity_confirmation} ✅", reply_markup=ReplyKeyboardRemove()) 
