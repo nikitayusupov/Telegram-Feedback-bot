@@ -89,6 +89,7 @@ async def async_main():
         BotCommand(command="list_courses", description="📚 Список всех курсов"),
         BotCommand(command="create_course", description="➕ Создать новый курс"),
         BotCommand(command="delete_course", description="🗑️ Удалить курс"),
+        BotCommand(command="list_links", description="🔗 Ссылки на Google Sheets"),
         BotCommand(command="cleanup_surveys", description="🧹 Очистить опросы без названия"),
     ]
 

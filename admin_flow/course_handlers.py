@@ -15,6 +15,7 @@ from utils.keyboards import get_course_selection_keyboard, get_confirmation_keyb
 from utils.auth_checks import admin_guard
 from sqlalchemy import delete
 from utils.constants import NO_COURSES_FOUND
+from config import settings
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -281,4 +282,26 @@ async def delete_course_confirm_no(callback: CallbackQuery, state: FSMContext):
     """Handles the 'Cancel' confirmation."""
     await callback.message.edit_text("Удаление отменено.")
     await callback.answer()
-    await state.clear() 
+    await state.clear()
+
+@router.message(Command("list_links"))
+@admin_guard
+async def list_google_sheets_links(msg: Message):
+    """Shows links to Google Sheets for feedback and survey responses."""
+    
+    feedback_url = settings.gsheet_url
+    surveys_url = settings.surveys_gsheet_url
+    
+    message_text = (
+        "📊 <b>Ссылки на Google Sheets</b>\n\n"
+        
+        "📝 <b>Отзывы студентов:</b>\n"
+        f"<a href='{feedback_url}'>Открыть таблицу отзывов</a>\n\n"
+        
+        "📋 <b>Результаты опросов:</b>\n"
+        f"<a href='{surveys_url}'>Открыть таблицу опросов</a>\n"
+        
+        "<i>💡 Подсказка: Нажмите на ссылку для открытия таблицы или скопируйте URL из текста ниже</i>"
+    )
+    
+    await msg.answer(message_text, disable_web_page_preview=True) 

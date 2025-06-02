@@ -7,10 +7,9 @@ from aiogram import F, Router, Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardButton
 from sqlmodel import select
 
 from curator_flow.group_handlers import curator_guard
@@ -433,38 +432,38 @@ async def initiate_survey_for_student(bot: Bot, dp: Dispatcher, student: Student
             course = course_result.scalars().first()
             course_name = course.name if course else "Неизвестный курс"
             
-            # Создаем сообщение с информацией об опросе
-            survey_info = f"📊 <b>Опрос '{survey.title}' по курсу '{course_name}'</b>\n\n"
+            # Создаем приветственное сообщение с выбором анонимности
+            welcome_message = (
+                f"📊 <b>Приглашение к участию в опросе</b>\n\n"
+                f"Приглашаем вас принять участие в опросе <b>'{survey.title}'</b> по курсу <b>'{course_name}'</b>.\n\n"
+                f"Как вы хотите пройти опрос?"
+            )
             
-            # Создаем клавиатуру в зависимости от типа вопроса
-            if first_question.q_type == QuestionType.scale:
-                keyboard = get_scale_keyboard()
-                survey_info += f"<b>Вопрос 1:</b> {first_question.text}\n\nОцените по шкале от 1 до 10:"
-            else:
-                keyboard = get_skip_keyboard()
-                survey_info += f"<b>Вопрос 1:</b> {first_question.text}\n\nВведите ваш ответ или нажмите «Пропустить»:"
+            # Создаем клавиатуру для выбора анонимности
+            builder = InlineKeyboardBuilder()
+            builder.add(InlineKeyboardButton(text="🔒 Анонимно", callback_data="survey_anonymity:anonymous"))
+            builder.add(InlineKeyboardButton(text="👤 С указанием имени", callback_data="survey_anonymity:named"))
+            builder.adjust(1)  # Each button in separate row (full width)
         
-        # Отправляем первый вопрос
+        # Отправляем приветственное сообщение с выбором анонимности
         await bot.send_message(
             chat_id=student.tg_user_id,
-            text=survey_info,
-            reply_markup=keyboard.as_markup()
+            text=welcome_message,
+            reply_markup=builder.as_markup()
         )
         
-        # Устанавливаем состояние студента для дальнейших ответов
+        # Устанавливаем состояние студента для выбора анонимности
         state = dp.fsm.get_context(bot, student.tg_user_id, student.tg_user_id)
-        await state.set_state(SurveyResponseStates.answering)
+        await state.set_state(SurveyResponseStates.selecting_anonymity)
         await state.update_data(
-            current_question_id=first_question.id,
             survey_id=survey_id,
+            first_question_id=first_question.id,
             course_name=course_name,
             group_name=group.name,
-            survey_title=survey.title,
-            question_type=first_question.q_type,
-            question_order=1
+            survey_title=survey.title
         )
         
-        logger.info(f"Survey started for student '{student.tg_username}' (Telegram ID: {student.tg_user_id})")
+        logger.info(f"Survey invitation sent to student '{student.tg_username}' (Telegram ID: {student.tg_user_id})")
         return True # Indicate success
         
     except TelegramForbiddenError:

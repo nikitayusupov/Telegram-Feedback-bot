@@ -6,20 +6,32 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from sqlmodel import select
+from datetime import datetime, timezone
 
 from db import async_session
 from models import Student, Response, Question, QuestionType, Group, Course, Survey
 # Import the keyboard functions we might need
 from utils.keyboards import get_scale_keyboard, get_skip_keyboard
+# Import Google Sheets functionality
+from utils.sheets import GoogleSheetsManager
+from config import settings
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+# Initialize Google Sheets manager for survey responses
+sheets_manager = GoogleSheetsManager(
+    creds_path=settings.google_credentials_path,
+    spreadsheet_url=settings.surveys_gsheet_url,
+    sheet_name=settings.surveys_gsheet_tab_name
+)
 
 # Constant for skipped answers
 SKIPPED_ANSWER = "[SKIPPED]"
 
 # ----- FSM States for Student receiving survey -----
 class SurveyResponseStates(StatesGroup):
+    selecting_anonymity = State()
     answering = State()
 
 # ----- Helper: Get Student ID -----
@@ -40,6 +52,7 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
     course_name = data.get("course_name", "")
     group_name = data.get("group_name", "")
     question_type = data.get("question_type")
+    is_anonymous = data.get("is_anonymous", False)
     
     # Ensure all necessary context is present
     if not survey_id or not question_id:
@@ -51,8 +64,17 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
             # Fetch student username first
             student_result = await session.execute(select(Student).where(Student.tg_user_id == user_id))
             student = student_result.scalars().first()
-            student_username = student.tg_username if student else f"[Unknown User ID: {user_id}]"
-            if not student:
+            
+            if is_anonymous:
+                student_username = "Аноним"
+                display_username = "Аноним"
+                stored_user_id = 0  # Store 0 for anonymous
+            else:
+                student_username = student.tg_username if student else f"[Unknown User ID: {user_id}]"
+                display_username = student_username
+                stored_user_id = user_id
+                
+            if not student and not is_anonymous:
                  logger.error(f"Cannot find Student with tg_user_id {user_id} for survey {survey_id}. Aborting response save.")
                  return False
 
@@ -65,7 +87,7 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
             # Create the denormalized Response object
             new_response = Response(
                 survey_id=survey_id,
-                student_tg_id=user_id,
+                student_tg_id=stored_user_id,
                 student_tg_username=student_username,
                 course_name=course_name,
                 group_name=group_name,
@@ -78,6 +100,25 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
             session.add(new_response)
             await session.commit()
             logger.info(f"Saved response for survey {survey_id} '{survey_title}', user {user_id}, question ID {question_id}.")
+            
+            # After successful DB save, also save to Google Sheets
+            response_data = {
+                "timestamp": new_response.answered_at,
+                "student_username": display_username,
+                "course_name": course_name,
+                "group_name": group_name,
+                "survey_title": survey_title,
+                "question_text": question.text,
+                "question_type": question_type.value if hasattr(question_type, 'value') else str(question_type),
+                "answer": answer_text.strip()
+            }
+            
+            # Save to Google Sheets asynchronously
+            sheets_result = await sheets_manager.add_survey_response(response_data)
+            if not sheets_result:
+                logger.error(f"Failed to save survey response to Google Sheets for user {user_id}")
+                # We don't notify the user of this error since the DB save was successful
+            
             return True # Indicate success
         except Exception as e:
             logger.exception(f"Failed to save response for survey {survey_id}, user {user_id}, question {question_id}: {e}")
@@ -143,6 +184,71 @@ async def send_next_question_or_complete(bot: Bot, state: FSMContext, user_id: i
         logger.info(f"Survey completed for user {user_id} (last question order: {question_order})")
 
 # ----- Handlers -----
+
+# Handler for anonymity selection in surveys
+@router.callback_query(SurveyResponseStates.selecting_anonymity, F.data.startswith("survey_anonymity:"))
+async def handle_survey_anonymity_selection(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Handles anonymity selection and starts the survey."""
+    try:
+        anonymity_choice = callback.data.split(":")[1]
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка при выборе анонимности.", show_alert=True)
+        await state.clear()
+        return
+
+    user_id = callback.from_user.id
+    is_anonymous = (anonymity_choice == "anonymous")
+    
+    # Get survey data from state
+    data = await state.get_data()
+    survey_id = data.get("survey_id")
+    first_question_id = data.get("first_question_id")
+    course_name = data.get("course_name")
+    group_name = data.get("group_name")
+    survey_title = data.get("survey_title")
+    
+    if not all([survey_id, first_question_id, course_name, group_name, survey_title]):
+        await callback.message.edit_text("Ошибка: Потерян контекст опроса. Попробуйте снова.")
+        await callback.answer()
+        await state.clear()
+        return
+    
+    async with async_session() as session:
+        # Get the first question
+        first_question = await session.get(Question, first_question_id)
+        if not first_question:
+            await callback.message.edit_text("Ошибка: Первый вопрос не найден.")
+            await callback.answer()
+            await state.clear()
+            return
+    
+    # Create message text with survey info
+    anonymity_text = "анонимно" if is_anonymous else "с указанием имени"
+    await callback.answer(f"Вы будете проходить опрос {anonymity_text}")
+    
+    message_text = f"📊 <b>Опрос '{survey_title}' по курсу '{course_name}'</b>\n\n<b>Вопрос 1:</b> {first_question.text}"
+    
+    # Select keyboard based on question type
+    if first_question.q_type == QuestionType.scale:
+        keyboard = get_scale_keyboard()
+        message_text += "\n\nОцените по шкале от 1 до 10:"
+    else: # Text question
+        keyboard = get_skip_keyboard()
+        message_text += "\n\nВведите ваш ответ или нажмите «Пропустить»:"
+    
+    # Edit the message to show the first question
+    await callback.message.edit_text(message_text, reply_markup=keyboard.as_markup())
+    
+    # Update state for the first question
+    await state.set_state(SurveyResponseStates.answering)
+    await state.update_data(
+        current_question_id=first_question_id,
+        question_type=first_question.q_type,
+        question_order=1,
+        is_anonymous=is_anonymous
+    )
+    
+    logger.info(f"Survey started for user {user_id} (anonymous: {is_anonymous})")
 
 # Handler for SCALE answers (Callback Query)
 @router.callback_query(SurveyResponseStates.answering, F.data.startswith("survey_answer:"))

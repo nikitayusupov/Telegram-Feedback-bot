@@ -114,4 +114,72 @@ class GoogleSheetsManager:
             return True
         except Exception as e:
             logger.error(f"Error adding feedback to Google Sheets: {e}")
+            return False
+
+    async def add_survey_response(self, response_data):
+        """
+        Add survey response to Google Sheets.
+        
+        response_data should be a dictionary with:
+        - timestamp: datetime object
+        - student_username: string
+        - course_name: string
+        - group_name: string
+        - survey_title: string
+        - question_text: string
+        - question_type: string
+        - answer: string
+        """
+        client = await self.get_client()
+        if not client:
+            logger.error("Could not get Google Sheets client for survey response")
+            return False
+        
+        # Use a different sheet name for survey responses
+        survey_sheet_name = "survey_responses"
+        headers = [
+            "Timestamp", 
+            "Username", 
+            "Course", 
+            "Group", 
+            "Survey Title", 
+            "Question", 
+            "Question Type", 
+            "Answer"
+        ]
+        
+        # Temporarily change sheet name for this operation
+        original_sheet_name = self.sheet_name
+        self.sheet_name = survey_sheet_name
+        
+        worksheet = await self.ensure_worksheet_exists(client, headers)
+        if not worksheet:
+            logger.error("Could not get or create survey responses worksheet")
+            self.sheet_name = original_sheet_name  # Restore original
+            return False
+        
+        # Restore original sheet name
+        self.sheet_name = original_sheet_name
+            
+        # Format the timestamp
+        timestamp = response_data.get("timestamp", datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Prepare row data
+        row = [
+            timestamp,
+            response_data.get("student_username", ""),
+            response_data.get("course_name", ""),
+            response_data.get("group_name", ""),
+            response_data.get("survey_title", ""),
+            response_data.get("question_text", ""),
+            response_data.get("question_type", ""),
+            response_data.get("answer", "")
+        ]
+        
+        try:
+            # Append the row to the worksheet
+            await worksheet.append_row(row)
+            return True
+        except Exception as e:
+            logger.error(f"Error adding survey response to Google Sheets: {e}")
             return False 

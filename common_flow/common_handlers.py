@@ -92,7 +92,9 @@ async def cmd_help(msg: Message, state: FSMContext, bot: Bot): # Add state and b
         "    /create_course - Создать новый курс\n"
         "    /delete_course - Удалить курс\n"
         "  Работа с кураторами:\n"
-        "    /add_curator - Добавить куратора к курсу"
+        "    /add_curator - Добавить куратора к курсу\n"
+        "  Отчеты и аналитика:\n"
+        "    /list_links - Ссылки на Google Sheets с данными"
     )
     
     # Determine help text based on role

@@ -45,6 +45,13 @@ class Settings(BaseSettings):
         env="GSHEET_URL"
     )
     gsheet_tab_name: str = Field("feedback", env="GSHEET_TAB_NAME")
+    
+    # Survey responses Google Sheets settings
+    surveys_gsheet_url: str = Field(
+        "https://docs.google.com/spreadsheets/d/1qj8vnUw3JVy9RzakT7_CvD6h-SHPSjLsB-lLrlP8IpA/edit?usp=sharing", 
+        env="SURVEYS_GSHEET_URL"
+    )
+    surveys_gsheet_tab_name: str = Field("survey_responses", env="SURVEYS_GSHEET_TAB_NAME")
 
     # ── Pydantic config ───────────────────────────────────────
     model_config = SettingsConfigDict(
