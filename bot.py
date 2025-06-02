@@ -37,6 +37,8 @@ from curator_flow import question_handlers as curator_question_router
 from curator_flow import send_survey_handlers as curator_send_survey_router
 # Import list surveys router
 from curator_flow import list_surveys_handlers as curator_list_surveys_router
+# Import list questions router
+from curator_flow import list_questions_handlers as curator_list_questions_router
 # Import student survey handlers router
 from student_flow import survey_handlers as student_survey_router
 
@@ -78,6 +80,7 @@ async def async_main():
         BotCommand(command="add_recipient", description="➕ Добавить студента в группу"),
         BotCommand(command="delete_recipient", description="🗑️ Удалить студента из группы"),
         BotCommand(command="set_questions", description="❓ Задать вопросы для опроса"),
+        BotCommand(command="list_questions", description="📋 Показать вопросы опроса"),
         BotCommand(command="create_survey", description="📝 Создать новый опрос"),
         BotCommand(command="list_surveys", description="📊 Показать список опросов группы"),
         BotCommand(command="send_now", description="▶️ Отправить опрос группе")
@@ -105,6 +108,7 @@ async def async_main():
     dp.include_router(curator_question_router.router) # Include question router
     dp.include_router(curator_send_survey_router.router) # Include send survey router
     dp.include_router(curator_list_surveys_router.router) # Include list surveys router
+    dp.include_router(curator_list_questions_router.router) # Include list questions router
     dp.include_router(student_survey_router.router) # Include student survey router
     # Add other routers here as you create them
 

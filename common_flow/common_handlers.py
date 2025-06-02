@@ -80,6 +80,7 @@ async def cmd_help(msg: Message, state: FSMContext, bot: Bot): # Add state and b
         "    /delete_recipient - Удалить студентов из группы\n"
         "  Работа с опросами:\n"
         "    /set_questions - Задать вопросы для опроса\n"
+        "    /list_questions - Посмотреть список вопросов\n"
         "    /list_surveys - Посмотреть список опросов\n"
         "    /create_survey - Создать новый опрос\n"
         "    /send_now - Отправить опрос группе"
