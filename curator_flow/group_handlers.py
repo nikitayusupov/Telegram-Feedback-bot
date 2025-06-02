@@ -88,6 +88,16 @@ def curator_guard(handler):
                 if curator_record:
                     is_curator_flag = True
                     logger.info(f"DB Check: User '{user.username}' (lookup: '{db_username}') found in Curator table.")
+                    
+                    # Update curator's tg_user_id if it's not set
+                    if curator_record.tg_user_id is None:
+                        curator_record.tg_user_id = user.id
+                        session.add(curator_record)
+                        await session.commit()
+                        logger.info(f"Updated curator '{db_username}' with tg_user_id: {user.id}")
+                    elif curator_record.tg_user_id != user.id:
+                        # Log if there's a mismatch but don't update (could be username change)
+                        logger.warning(f"Curator '{db_username}' tg_user_id mismatch: stored={curator_record.tg_user_id}, current={user.id}")
                 else:
                     logger.info(f"DB Check: User '{user.username}' (lookup: '{db_username}') not found in Curator table.")
         else:

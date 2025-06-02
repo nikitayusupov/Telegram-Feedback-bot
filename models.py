@@ -60,6 +60,10 @@ class Group(SQLModel, table=True):
 class Curator(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     tg_username: str = Field(unique=True, index=True)
+    tg_user_id: Optional[int] = Field(
+        default=None, 
+        sa_column=Column(BigInteger, unique=True, index=True)
+    )
 
 
 class CuratorGroup(SQLModel, table=True):

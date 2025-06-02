@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 from utils.keyboards import get_course_selection_keyboard
 # Import the constant
 from utils.constants import NO_COURSES_FOUND
+# Import the notification utility
+from utils.notifications import notify_curators_about_feedback
 
 # Initialize Google Sheets manager
 sheets_manager = GoogleSheetsManager(
@@ -139,7 +141,7 @@ async def feedback_topic(msg: Message, state: FSMContext):
 
 
 @router.message(FeedbackStates.text, F.text)
-async def feedback_save(msg: Message, state: FSMContext):
+async def feedback_save(msg: Message, state: FSMContext, bot: Bot):
     """Saves the feedback including the course ID and anonymity preference."""
     data = await state.get_data()
     topic = data.get("topic", "<none>")
@@ -199,6 +201,24 @@ async def feedback_save(msg: Message, state: FSMContext):
         if not sheets_result:
             logger.error(f"Failed to save feedback to Google Sheets for user {user_id}")
             # We don't notify the user of this error since the DB save was successful
+        
+        # Send notification to curators of this course
+        try:
+            notified_curators = await notify_curators_about_feedback(
+                bot=bot,
+                course_id=course_id,
+                student_username=display_username,
+                topic=topic,
+                feedback_text=msg.text.strip(),
+                course_name=course_name
+            )
+            if notified_curators > 0:
+                logger.info(f"Notified {notified_curators} curators about feedback from user {user_id} for course '{course_name}'")
+            else:
+                logger.info(f"No curators to notify about feedback from user {user_id} for course '{course_name}'")
+        except Exception as e:
+            logger.error(f"Error sending curator notifications for feedback from user {user_id}: {e}")
+            # We don't notify the user of this error since the main feedback save was successful
     
     anonymity_confirmation = " (анонимно)" if is_anonymous else ""
     await msg.answer(f"Спасибо! Отзыв записан{anonymity_confirmation} ✅", reply_markup=ReplyKeyboardRemove()) 

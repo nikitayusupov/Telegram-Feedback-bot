@@ -93,6 +93,7 @@ async def cmd_help(msg: Message, state: FSMContext, bot: Bot): # Add state and b
         "    /delete_course - Удалить курс\n"
         "  Работа с кураторами:\n"
         "    /add_curator - Добавить куратора к курсу\n"
+        "    /list_curators - Список всех кураторов системы\n"
         "  Отчеты и аналитика:\n"
         "    /list_links - Ссылки на Google Sheets с данными"
     )

@@ -10,7 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
 from db import async_session
-from models import Course, Group, CuratorCourse, CuratorGroup, GroupStudent
+from models import Course, Group, CuratorCourse, CuratorGroup, GroupStudent, Curator
 from utils.keyboards import get_course_selection_keyboard, get_confirmation_keyboard
 from utils.auth_checks import admin_guard
 from sqlalchemy import delete
@@ -304,4 +304,96 @@ async def list_google_sheets_links(msg: Message):
         "<i>💡 Подсказка: Нажмите на ссылку для открытия таблицы или скопируйте URL из текста ниже</i>"
     )
     
-    await msg.answer(message_text, disable_web_page_preview=True) 
+    await msg.answer(message_text, disable_web_page_preview=True)
+
+@router.message(Command("list_curators"))
+@admin_guard
+async def list_curators(msg: Message):
+    """Lists all curators in the system with their information."""
+    async with async_session() as session:
+        # Get all curators with their associated courses
+        curators_stmt = select(Curator).order_by(Curator.tg_username)
+        curators_result = await session.execute(curators_stmt)
+        curators = curators_result.scalars().all()
+        
+        if not curators:
+            await msg.answer("📝 В системе нет зарегистрированных кураторов.")
+            return
+        
+        response_lines = ["👥 <b>Список всех кураторов:</b>\n"]
+        
+        for curator in curators:
+            # Get courses for this curator
+            courses_stmt = (
+                select(Course.name)
+                .join(CuratorCourse, Course.id == CuratorCourse.course_id)
+                .where(CuratorCourse.curator_id == curator.id)
+                .order_by(Course.name)
+            )
+            courses_result = await session.execute(courses_stmt)
+            courses = courses_result.scalars().all()
+            
+            # Format curator info
+            curator_info = f"📌 <b>@{curator.tg_username}</b> (ID: {curator.id})"
+            
+            # Add Telegram ID if available
+            if curator.tg_user_id:
+                curator_info += f"\n   📱 Telegram ID: {curator.tg_user_id}"
+                status_icon = "✅"  # Has Telegram ID - can receive notifications
+            else:
+                curator_info += f"\n   📱 Telegram ID: <i>не установлен</i>"
+                status_icon = "⚠️"  # No Telegram ID - cannot receive notifications
+            
+            # Add courses
+            if courses:
+                course_list = ", ".join(courses)
+                curator_info += f"\n   📚 Курсы: {course_list}"
+            else:
+                curator_info += f"\n   📚 Курсы: <i>не назначены</i>"
+            
+            # Add status
+            status_text = "может получать уведомления" if curator.tg_user_id else "не может получать уведомления"
+            curator_info += f"\n   {status_icon} Статус: <i>{status_text}</i>"
+            
+            response_lines.append(curator_info)
+        
+        # Add summary
+        total_curators = len(curators)
+        curators_with_telegram = len([c for c in curators if c.tg_user_id])
+        curators_without_telegram = total_curators - curators_with_telegram
+        
+        summary = (
+            f"\n📊 <b>Сводка:</b>\n"
+            f"• Всего кураторов: {total_curators}\n"
+            f"• С Telegram ID: {curators_with_telegram} ✅\n"
+            f"• Без Telegram ID: {curators_without_telegram} ⚠️"
+        )
+        
+        if curators_without_telegram > 0:
+            summary += (
+                f"\n\n💡 <i>Подсказка: Кураторы без Telegram ID должны запустить бота "
+                f"и выполнить любую команду куратора для получения уведомлений о новых отзывах.</i>"
+            )
+        
+        response_lines.append(summary)
+        
+        response_text = "\n\n".join(response_lines)
+        
+        # Split message if too long (Telegram limit is ~4096 characters)
+        if len(response_text) > 4000:
+            # Send in chunks
+            parts = response_lines[:-1]  # All curator info without summary
+            current_message = "👥 <b>Список всех кураторов:</b>\n"
+            
+            for part in parts:
+                if len(current_message + "\n\n" + part) > 3500:
+                    await msg.answer(current_message)
+                    current_message = part
+                else:
+                    current_message += "\n\n" + part
+            
+            # Send remaining content with summary
+            current_message += "\n\n" + response_lines[-1]  # Add summary
+            await msg.answer(current_message)
+        else:
+            await msg.answer(response_text) 
