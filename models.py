@@ -22,7 +22,7 @@ from sqlmodel import (
     Field,
 )
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy import UniqueConstraint, Column, BigInteger
+from sqlalchemy import UniqueConstraint, Column, BigInteger, Text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 # Import settings to access database_url
@@ -105,6 +105,10 @@ class Survey(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     group_id: int = Field(foreign_key="group.id")
     title: str = Field(default="", max_length=1000)
+    intro_text: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
     started_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(TIMESTAMP(timezone=True), nullable=False)
@@ -125,6 +129,10 @@ class Response(SQLModel, table=True):
     answered_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(TIMESTAMP(timezone=True), nullable=False)
+    )
+    session_id: str = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
     )
 
 

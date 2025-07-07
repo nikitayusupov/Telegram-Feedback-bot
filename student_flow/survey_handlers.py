@@ -1,5 +1,6 @@
 # student_flow/survey_handlers.py
 import logging
+import uuid
 from aiogram import F, Router, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -53,6 +54,7 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
     group_name = data.get("group_name", "")
     question_type = data.get("question_type")
     is_anonymous = data.get("is_anonymous", False)
+    session_id = data.get("session_id")
     
     # Ensure all necessary context is present
     if not survey_id or not question_id:
@@ -94,7 +96,8 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
                 survey_title=survey_title,
                 question_text=question.text,
                 question_type=question_type or question.q_type,
-                answer=answer_text.strip()
+                answer=answer_text.strip(),
+                session_id=session_id or ""
                 # answered_at is handled by default_factory
             )
             session.add(new_response)
@@ -110,7 +113,8 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
                 "survey_title": survey_title,
                 "question_text": question.text,
                 "question_type": question_type.value if hasattr(question_type, 'value') else str(question_type),
-                "answer": answer_text.strip()
+                "answer": answer_text.strip(),
+                "session_id": session_id 
             }
             
             # Save to Google Sheets asynchronously
@@ -241,13 +245,15 @@ async def handle_survey_anonymity_selection(callback: CallbackQuery, state: FSMC
     
     # Update state for the first question
     await state.set_state(SurveyResponseStates.answering)
+
+    session_id = str(uuid.uuid4())
     await state.update_data(
         current_question_id=first_question_id,
         question_type=first_question.q_type,
         question_order=1,
-        is_anonymous=is_anonymous
+        is_anonymous=is_anonymous,
+        session_id=session_id
     )
-    
     logger.info(f"Survey started for user {user_id} (anonymous: {is_anonymous})")
 
 # Handler for SCALE answers (Callback Query)
