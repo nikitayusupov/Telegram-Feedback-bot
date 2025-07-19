@@ -10,6 +10,8 @@ import gspread_asyncio
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import logging
+import re
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,7 @@ class GoogleSheetsManager:
             logger.error(f"Error authenticating with Google Sheets: {e}")
             return None
     
-    async def ensure_worksheet_exists(self, client, headers):
+    async def ensure_worksheet_exists(self, client, headers, sheet_name: str):
         """Ensure the worksheet exists and has the correct headers."""
         try:
             # Extract spreadsheet ID from URL
@@ -58,11 +60,11 @@ class GoogleSheetsManager:
             
             # Check if worksheet exists
             try:
-                worksheet = await spreadsheet.worksheet(self.sheet_name)
+                worksheet = await spreadsheet.worksheet(sheet_name)
             except gspread.exceptions.WorksheetNotFound:
                 # Create worksheet if it doesn't exist
                 worksheet = await spreadsheet.add_worksheet(
-                    title=self.sheet_name, 
+                    title=sheet_name, 
                     rows=1, 
                     cols=len(headers)
                 )
@@ -91,7 +93,7 @@ class GoogleSheetsManager:
             return False
         
         headers = ["Timestamp", "Username", "Course", "Topic", "Feedback"]
-        worksheet = await self.ensure_worksheet_exists(client, headers)
+        worksheet = await self.ensure_worksheet_exists(client, headers, self.sheet_name)
         if not worksheet:
             logger.error("Could not get or create worksheet")
             return False
@@ -135,8 +137,9 @@ class GoogleSheetsManager:
             logger.error("Could not get Google Sheets client for survey response")
             return False
         
-        # Use a different sheet name for survey responses
-        survey_sheet_name = "survey_responses"
+        raw_title = response_data.get("survey_title", "survey")
+        safe_title = re.sub(r"[\\\/\?\*\[\]\:]", "_", raw_title)[:100]
+        sheet_name = safe_title or "survey"
         headers = [
             "Timestamp", 
             "Username", 
@@ -145,22 +148,15 @@ class GoogleSheetsManager:
             "Survey Title", 
             "Question", 
             "Question Type", 
-            "Answer"
+            "Answer",
+            "Session ID"
         ]
         
-        # Temporarily change sheet name for this operation
-        original_sheet_name = self.sheet_name
-        self.sheet_name = survey_sheet_name
-        
-        worksheet = await self.ensure_worksheet_exists(client, headers)
+        worksheet = await self.ensure_worksheet_exists(client, headers, sheet_name)
         if not worksheet:
             logger.error("Could not get or create survey responses worksheet")
-            self.sheet_name = original_sheet_name  # Restore original
             return False
         
-        # Restore original sheet name
-        self.sheet_name = original_sheet_name
-            
         # Format the timestamp
         timestamp = response_data.get("timestamp", datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
         
@@ -173,13 +169,64 @@ class GoogleSheetsManager:
             response_data.get("survey_title", ""),
             response_data.get("question_text", ""),
             response_data.get("question_type", ""),
-            response_data.get("answer", "")
+            response_data.get("answer", ""),
+            response_data.get("session_id", "")
         ]
         
         try:
             # Append the row to the worksheet
             await worksheet.append_row(row)
+
+            col1 = await worksheet.col_values(1)
+            new_row = len(col1)
+
+            session_id = response_data.get("session_id","")
+            color = self._get_color_for_session(session_id)
+            spreadsheet_id = self.spreadsheet_url.split("/d/")[1].split("/")[0]
+            spreadsheet = await client.open_by_key(spreadsheet_id)
+            await self._color_row(
+                spreadsheet,
+                worksheet,
+                row_index=new_row,
+                color=color,
+                num_columns=len(headers)
+            )
             return True
         except Exception as e:
             logger.error(f"Error adding survey response to Google Sheets: {e}")
             return False 
+
+    def _get_color_for_session(self, session_id: str) -> dict:
+        palette = [
+            {"red":0.98, "green":0.94, "blue":0.96},  # бледно-розовый
+            {"red":0.94, "green":0.98, "blue":0.94},  # бледно-зелёный
+            {"red":0.94, "green":0.96, "blue":0.98},  # бледно-голубой
+            {"red":0.96, "green":0.94, "blue":0.98},  # бледно-лиловый
+            {"red":0.98, "green":0.96, "blue":0.94},  # бледно-персиковый
+            {"red":0.96, "green":0.98, "blue":0.94},  # бледно-мятный
+            {"red":0.94, "green":0.98, "blue":0.96},  # бледно-аквамариновый
+            {"red":0.96, "green":0.94, "blue":0.96},  # бледно-лилово-розовый
+        ]
+        h = int(hashlib.sha256(session_id.encode()).hexdigest(), 16)
+        return palette[h % len(palette)]
+
+    async def _color_row(self, spreadsheet, worksheet, row_index: int, color: dict, num_columns: int):
+        sheet_id = worksheet.id
+        requests = [{
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": row_index - 1,
+                    "endRowIndex": row_index,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": num_columns
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": color
+                    }
+                },
+                "fields": "userEnteredFormat.backgroundColor"
+            }
+        }]
+        await spreadsheet.batch_update({"requests": requests})

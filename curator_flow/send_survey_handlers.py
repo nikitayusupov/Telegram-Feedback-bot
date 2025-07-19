@@ -32,6 +32,7 @@ class CreateSurveyStates(StatesGroup):
     selecting_course = State()
     selecting_group = State()
     entering_title = State()
+    entering_intro = State()
 
 class SendSurveyStates(StatesGroup):
     selecting_course = State()
@@ -55,7 +56,7 @@ async def create_survey_start(msg: Message, state: FSMContext):
         await msg.answer(NO_COURSES_FOUND)
         return
 
-    await msg.answer("1/3: Выберите курс для создания опроса:", reply_markup=builder.as_markup())
+    await msg.answer("1/4: Выберите курс для создания опроса:", reply_markup=builder.as_markup())
     await state.set_state(CreateSurveyStates.selecting_course)
 
 @router.callback_query(CreateSurveyStates.selecting_course, F.data.startswith("cs_select_course:"))
@@ -76,7 +77,7 @@ async def create_survey_course_selected(callback: CallbackQuery, state: FSMConte
         return
 
     await state.update_data(course_id=course_id)
-    await callback.message.edit_text("2/3: Выберите группу для создания опроса:", reply_markup=group_builder.as_markup())
+    await callback.message.edit_text("2/4: Выберите группу для создания опроса:", reply_markup=group_builder.as_markup())
     await state.set_state(CreateSurveyStates.selecting_group)
     await callback.answer()
 
@@ -104,7 +105,7 @@ async def create_survey_group_selected(callback: CallbackQuery, state: FSMContex
     
     # Запрашиваем название опроса
     await callback.message.edit_text(
-        f"3/3: Введите название для опроса группы '{group.name}':\n"
+        f"3/4: Введите название для опроса группы '{group.name}':\n"
         "(до 1000 символов)"
     )
     await state.set_state(CreateSurveyStates.entering_title)
@@ -140,29 +141,50 @@ async def create_survey_title_entered(msg: Message, state: FSMContext):
         )
         existing_survey_result = await session.execute(existing_survey_stmt)
         existing_survey = existing_survey_result.scalars().first()
-        
         if existing_survey:
             await msg.answer(
                 f"⚠️ Опрос с названием '{survey_title}' уже существует для группы '{group_name}'.\n"
                 "Пожалуйста, выберите другое название."
             )
-            return  # Сохраняем состояние FSM для повторного ввода
+            return
         
-        # Создаем запись опроса с названием
-        new_survey = Survey(group_id=group_id, title=survey_title)
+    await state.update_data(title=survey_title)
+    await msg.answer(
+        "4/4: Введите текст приглашения (intro-сообщение),\n"
+        "(необязательно, до 2000 символов).\n"
+        "Пример: “Очень просим оставить обратную связь по занятию, благодаря вашим ответам мы постоянно улучшаем материалы”"
+    )
+    await state.set_state(CreateSurveyStates.entering_intro)
+
+
+@router.message(CreateSurveyStates.entering_intro, F.text)
+async def create_survey_intro_entered(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    group_id = data.get("group_id")
+    group_name = data.get("group_name", "Неизвестная группа")
+    survey_title = data.get("title")
+    intro_text = msg.text.strip() or None
+
+    if not group_id or not survey_title:
+        await msg.answer("Ошибка контекста. Начните сначала с /create_survey.")
+        await state.clear()
+        return
+
+    async with async_session() as session:
+        new_survey = Survey(
+            group_id=group_id,
+            title=survey_title,
+            intro_text=intro_text
+        )
         session.add(new_survey)
         await session.commit()
         await session.refresh(new_survey)
-        survey_id = new_survey.id
-        logger.info(f"Created Survey record with ID {survey_id}, title '{survey_title}' for group '{group_name}' (ID: {group_id})")
-    
-    success_message = (
-        f"✅ Опрос '{survey_title}' для группы '{group_name}' успешно создан!\n\n"
-        f"• Добавьте вопросы к опросу с помощью команды /set_questions\n"
-        f"• После добавления вопросов, используйте /send_now для отправки опроса студентам"
+        logger.info(f"Created Survey ID={new_survey.id}, title='{survey_title}' with intro_text.")
+
+    await msg.answer(
+        f"✅ Опрос '{survey_title}' для группы '{group_name}' успешно создан!\n"
+        f"Текст приглашения сохранён и будет автоматически вставлен при /send_now."
     )
-    
-    await msg.answer(success_message)
     await state.clear()
 
 # ----- Send Survey Command -----
@@ -433,10 +455,14 @@ async def initiate_survey_for_student(bot: Bot, dp: Dispatcher, student: Student
             course_name = course.name if course else "Неизвестный курс"
             
             # Создаем приветственное сообщение с выбором анонимности
-            welcome_message = (
-                f"📊 <b>Приглашение к участию в опросе</b>\n\n"
-                f"Приглашаем вас принять участие в опросе <b>'{survey.title}'</b> по курсу <b>'{course_name}'</b>.\n\n"
-                f"Как вы хотите пройти опрос?"
+            welcome_message = "📊 <b>Приглашение к участию в опросе</b>\n\n"
+            if survey.intro_text:
+                welcome_message += survey.intro_text.strip() + "\n\n"
+
+            welcome_message += (
+                f"Приглашаем вас принять участие в опросе <b>'{survey.title}'</b> "
+                f"по курсу <b>'{course_name}'</b>.\n\n"
+                "Как вы хотите пройти опрос?"
             )
             
             # Создаем клавиатуру для выбора анонимности
