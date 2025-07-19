@@ -48,7 +48,7 @@ from student_flow import survey_handlers as student_survey_router
 # Logging Setup
 # ---------------------------------------------------------------------------
 # Setup advanced logging with daily rotation (file only, no console output)
-logger = setup_logging(log_level=logging.INFO, log_dir="logs", console_output=False)
+logger = setup_logging(log_level=logging.DEBUG, log_dir="logs", console_output=False)
 
 
 # ---------------------------------------------------------------------------

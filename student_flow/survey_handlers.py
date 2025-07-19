@@ -20,12 +20,17 @@ from config import settings
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Initialize Google Sheets manager for survey responses
-sheets_manager = GoogleSheetsManager(
-    creds_path=settings.google_credentials_path,
-    spreadsheet_url=settings.surveys_gsheet_url,
-    sheet_name=settings.surveys_gsheet_tab_name
-)
+# Initialize Google Sheets manager for survey responses (optional)
+try:
+    sheets_manager = GoogleSheetsManager(
+        creds_path=settings.google_credentials_path,
+        spreadsheet_url=settings.surveys_gsheet_url,
+        sheet_name=settings.surveys_gsheet_tab_name
+    )
+    logger.info("Google Sheets integration for surveys initialized successfully")
+except Exception as e:
+    logger.warning(f"Google Sheets integration for surveys disabled: {e}")
+    sheets_manager = None
 
 # Constant for skipped answers
 SKIPPED_ANSWER = "[SKIPPED]"
@@ -117,11 +122,14 @@ async def save_response(state: FSMContext, user_id: int, answer_text: str):
                 "session_id": session_id 
             }
             
-            # Save to Google Sheets asynchronously
-            sheets_result = await sheets_manager.add_survey_response(response_data)
-            if not sheets_result:
-                logger.error(f"Failed to save survey response to Google Sheets for user {user_id}")
-                # We don't notify the user of this error since the DB save was successful
+            # Save to Google Sheets asynchronously (if available)
+            if sheets_manager:
+                sheets_result = await sheets_manager.add_survey_response(response_data)
+                if not sheets_result:
+                    logger.error(f"Failed to save survey response to Google Sheets for user {user_id}")
+                    # We don't notify the user of this error since the DB save was successful
+            else:
+                logger.warning(f"Google Sheets integration not available, skipping survey response for user {user_id}")
             
             return True # Indicate success
         except Exception as e:
@@ -193,15 +201,24 @@ async def send_next_question_or_complete(bot: Bot, state: FSMContext, user_id: i
 @router.callback_query(SurveyResponseStates.selecting_anonymity, F.data.startswith("survey_anonymity:"))
 async def handle_survey_anonymity_selection(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """Handles anonymity selection and starts the survey."""
+    user_id = callback.from_user.id
+    current_state = await state.get_state()
+    logger.info(f"Survey anonymity callback received from user {user_id}, callback_data='{callback.data}', current_state='{current_state}'")
+    
     try:
         anonymity_choice = callback.data.split(":")[1]
     except (IndexError, ValueError):
-        await callback.answer("Ошибка при выборе анонимности.", show_alert=True)
+        logger.error(f"Invalid callback data for survey anonymity: {callback.data}")
+        try:
+            await callback.answer("Ошибка при выборе анонимности.", show_alert=True)
+        except Exception as e:
+            logger.warning(f"Failed to send callback answer: {e}")
         await state.clear()
         return
 
-    user_id = callback.from_user.id
     is_anonymous = (anonymity_choice == "anonymous")
+    
+    logger.info(f"User {user_id} selected survey anonymity: {anonymity_choice} (anonymous: {is_anonymous})")
     
     # Get survey data from state
     data = await state.get_data()
@@ -210,6 +227,8 @@ async def handle_survey_anonymity_selection(callback: CallbackQuery, state: FSMC
     course_name = data.get("course_name")
     group_name = data.get("group_name")
     survey_title = data.get("survey_title")
+    
+    logger.debug(f"Survey data from state: survey_id={survey_id}, first_question_id={first_question_id}, course='{course_name}', group='{group_name}', title='{survey_title}'")
     
     if not all([survey_id, first_question_id, course_name, group_name, survey_title]):
         await callback.message.edit_text("Ошибка: Потерян контекст опроса. Попробуйте снова.")
@@ -228,7 +247,12 @@ async def handle_survey_anonymity_selection(callback: CallbackQuery, state: FSMC
     
     # Create message text with survey info
     anonymity_text = "анонимно" if is_anonymous else "с указанием имени"
-    await callback.answer(f"Вы будете проходить опрос {anonymity_text}")
+    
+    # Try to send callback answer
+    try:
+        await callback.answer(f"Вы будете проходить опрос {anonymity_text}")
+    except Exception as e:
+        logger.warning(f"Failed to send callback answer: {e}")
     
     message_text = f"📊 <b>Опрос '{survey_title}' по курсу '{course_name}'</b>\n\n<b>Вопрос 1:</b> {first_question.text}"
     
@@ -241,7 +265,18 @@ async def handle_survey_anonymity_selection(callback: CallbackQuery, state: FSMC
         message_text += "\n\nВведите ваш ответ или нажмите «Пропустить»:"
     
     # Edit the message to show the first question
-    await callback.message.edit_text(message_text, reply_markup=keyboard.as_markup())
+    try:
+        await callback.message.edit_text(message_text, reply_markup=keyboard.as_markup())
+    except Exception as e:
+        logger.error(f"Failed to edit message for first question: {e}")
+        # If editing fails, send a new message instead
+        try:
+            await callback.message.answer(message_text, reply_markup=keyboard.as_markup())
+        except Exception as e2:
+            logger.error(f"Failed to send new message for first question: {e2}")
+            await callback.message.answer("Произошла ошибка при запуске опроса. Попробуйте снова позже.")
+            await state.clear()
+            return
     
     # Update state for the first question
     await state.set_state(SurveyResponseStates.answering)
@@ -255,6 +290,25 @@ async def handle_survey_anonymity_selection(callback: CallbackQuery, state: FSMC
         session_id=session_id
     )
     logger.info(f"Survey started for user {user_id} (anonymous: {is_anonymous})")
+
+# Fallback handler for survey anonymity callbacks without state (debugging)
+@router.callback_query(F.data.startswith("survey_anonymity:"))
+async def handle_survey_anonymity_fallback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Fallback handler for survey anonymity callbacks when state is not set."""
+    user_id = callback.from_user.id
+    current_state = await state.get_state()
+    logger.warning(f"FALLBACK: Survey anonymity callback from user {user_id}, callback_data='{callback.data}', current_state='{current_state}'")
+    
+    # Check if we can recover the survey context
+    try:
+        # Send an error message and suggest starting the survey again
+        await callback.answer("Ошибка состояния. Попробуйте получить опрос заново.", show_alert=True)
+        await callback.message.edit_text(
+            "⚠️ Произошла ошибка с состоянием опроса.\n\n"
+            "Попросите куратора отправить опрос заново."
+        )
+    except Exception as e:
+        logger.error(f"Failed to handle fallback survey anonymity: {e}")
 
 # Handler for SCALE answers (Callback Query)
 @router.callback_query(SurveyResponseStates.answering, F.data.startswith("survey_answer:"))

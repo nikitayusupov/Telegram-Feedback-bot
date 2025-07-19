@@ -179,3 +179,4 @@ gen-lang-client-0435735157-04b6dc045b7b.json
 # Custom log files and directories
 logs/
 *.log
+test_conn_db.py

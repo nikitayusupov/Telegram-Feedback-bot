@@ -77,7 +77,12 @@ async def create_survey_course_selected(callback: CallbackQuery, state: FSMConte
         return
 
     await state.update_data(course_id=course_id)
-    await callback.message.edit_text("2/4: Выберите группу для создания опроса:", reply_markup=group_builder.as_markup())
+    try:
+        await callback.message.edit_text("2/4: Выберите группу для создания опроса:", reply_markup=group_builder.as_markup())
+    except Exception as e:
+        logger.warning(f"Failed to edit message for group selection: {e}")
+        # If editing fails, send a new message instead
+        await callback.message.answer("2/4: Выберите группу для создания опроса:", reply_markup=group_builder.as_markup())
     await state.set_state(CreateSurveyStates.selecting_group)
     await callback.answer()
 
@@ -182,8 +187,11 @@ async def create_survey_intro_entered(msg: Message, state: FSMContext):
         logger.info(f"Created Survey ID={new_survey.id}, title='{survey_title}' with intro_text.")
 
     await msg.answer(
-        f"✅ Опрос '{survey_title}' для группы '{group_name}' успешно создан!\n"
-        f"Текст приглашения сохранён и будет автоматически вставлен при /send_now."
+        f"✅ Опрос '{survey_title}' для группы '{group_name}' успешно создан!\n\n"
+        f"📋 **Следующие шаги:**\n"
+        f"1. Добавьте вопросы: /set_questions\n"
+        f"2. Отправьте опрос: /send_now\n\n"
+        f"💡 Текст приглашения сохранён и будет автоматически добавлен при отправке."
     )
     await state.clear()
 
@@ -277,10 +285,23 @@ async def send_now_group_selected(callback: CallbackQuery, state: FSMContext):
         
         if not has_questions:
             logger.warning(f"Survey selection cancelled for group '{group.name}': No questions found in any survey.")
-            await callback.message.edit_text(
-                f"⚠️ Для группы '{group.name}' не заданы вопросы ни в одном опросе.\n\n"
-                f"Сначала добавьте вопросы с помощью команды /set_questions."
-            )
+            try:
+                await callback.message.edit_text(
+                    f"⚠️ **Опрос не готов к отправке**\n\n"
+                    f"Для группы '{group.name}' не заданы вопросы ни в одном опросе.\n\n"
+                    f"📋 **Что нужно сделать:**\n"
+                    f"1. Добавьте вопросы: /set_questions\n"
+                    f"2. Затем отправьте опрос: /send_now"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to edit message for no questions warning: {e}")
+                await callback.message.answer(
+                    f"⚠️ **Опрос не готов к отправке**\n\n"
+                    f"Для группы '{group.name}' не заданы вопросы ни в одном опросе.\n\n"
+                    f"📋 **Что нужно сделать:**\n"
+                    f"1. Добавьте вопросы: /set_questions\n"
+                    f"2. Затем отправьте опрос: /send_now"
+                )
             await callback.answer()
             await state.clear()
             return
@@ -422,7 +443,17 @@ async def send_now_survey_selected(callback: CallbackQuery, state: FSMContext, b
         
     await callback.message.edit_text(status_message)
     await callback.answer()
-    await state.clear()
+    
+    # Check if the curator is also a survey recipient - if so, preserve their survey state
+    curator_user_id = callback.from_user.id
+    curator_is_recipient = any(s.tg_user_id == curator_user_id for s in reachable_students)
+    
+    if curator_is_recipient:
+        # Don't clear state - curator needs to respond to survey
+        logger.info(f"Curator {curator_user_id} is also a survey recipient - preserving their survey response state")
+    else:
+        # Safe to clear curator's state
+        await state.clear()
 
 # Helper function to send the first question and set student state
 async def initiate_survey_for_student(bot: Bot, dp: Dispatcher, student: Student, first_question: Question, survey_id: int):
@@ -479,8 +510,14 @@ async def initiate_survey_for_student(bot: Bot, dp: Dispatcher, student: Student
         )
         
         # Устанавливаем состояние студента для выбора анонимности
+        logger.info(f"Setting FSM state for user {student.tg_user_id} ({student.tg_username})")
+        
         state = dp.fsm.get_context(bot, student.tg_user_id, student.tg_user_id)
+        logger.debug(f"FSM context created for user {student.tg_user_id}")
+        
         await state.set_state(SurveyResponseStates.selecting_anonymity)
+        logger.debug(f"FSM state set to SurveyResponseStates.selecting_anonymity for user {student.tg_user_id}")
+        
         await state.update_data(
             survey_id=survey_id,
             first_question_id=first_question.id,
@@ -488,6 +525,18 @@ async def initiate_survey_for_student(bot: Bot, dp: Dispatcher, student: Student
             group_name=group.name,
             survey_title=survey.title
         )
+        logger.debug(f"FSM data updated for user {student.tg_user_id}")
+        
+        # Debug: Verify state was set correctly
+        check_state = await state.get_state()
+        check_data = await state.get_data()
+        logger.info(f"VERIFICATION: Set survey state for user {student.tg_user_id}: state='{check_state}', data_keys={list(check_data.keys())}")
+        
+        # Double-check by getting a fresh context
+        fresh_state = dp.fsm.get_context(bot, student.tg_user_id, student.tg_user_id)
+        fresh_check_state = await fresh_state.get_state()
+        fresh_check_data = await fresh_state.get_data()
+        logger.info(f"FRESH CHECK: Survey state for user {student.tg_user_id}: state='{fresh_check_state}', data_keys={list(fresh_check_data.keys())}")
         
         logger.info(f"Survey invitation sent to student '{student.tg_username}' (Telegram ID: {student.tg_user_id})")
         return True # Indicate success

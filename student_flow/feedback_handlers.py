@@ -1,4 +1,5 @@
 # student_flow/feedback_handlers.py
+import logging
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -18,6 +19,9 @@ from config import settings
 
 # Use settings from config
 GOOGLE_SHEETS_URL = settings.gsheet_url
+
+# Get logger instance
+logger = logging.getLogger(__name__)
 GOOGLE_SHEET_TAB_NAME = settings.gsheet_tab_name
 GOOGLE_SHEET_CREDENTIALS_PATH = settings.google_credentials_path
 
@@ -30,12 +34,17 @@ from utils.constants import NO_COURSES_FOUND
 # Import the notification utility
 from utils.notifications import notify_curators_about_feedback
 
-# Initialize Google Sheets manager
-sheets_manager = GoogleSheetsManager(
-    creds_path=GOOGLE_SHEET_CREDENTIALS_PATH,
-    spreadsheet_url=GOOGLE_SHEETS_URL,
-    sheet_name=GOOGLE_SHEET_TAB_NAME
-)
+# Initialize Google Sheets manager (optional)
+try:
+    sheets_manager = GoogleSheetsManager(
+        creds_path=GOOGLE_SHEET_CREDENTIALS_PATH,
+        spreadsheet_url=GOOGLE_SHEETS_URL,
+        sheet_name=GOOGLE_SHEET_TAB_NAME
+    )
+    logger.info("Google Sheets integration initialized successfully")
+except Exception as e:
+    logger.warning(f"Google Sheets integration disabled: {e}")
+    sheets_manager = None
 
 # FSM States for Feedback
 class FeedbackStates(StatesGroup):
@@ -92,13 +101,21 @@ async def feedback_course_selected(callback: CallbackQuery, state: FSMContext):
     try:
         course_id = int(callback.data.split(":")[1])
     except (IndexError, ValueError):
-        await callback.answer("Ошибка при выборе курса.", show_alert=True)
+        try:
+            await callback.answer("Ошибка при выборе курса.", show_alert=True)
+        except Exception as e:
+            logger.warning(f"Failed to send error callback answer: {e}")
         return
 
     await state.update_data(course_id=course_id)
     await state.set_state(FeedbackStates.selecting_anonymity)
     
-    await callback.answer("Курс выбран!")
+    # Try to send callback answer, but don't let network issues stop the flow
+    try:
+        await callback.answer("Курс выбран!")
+    except Exception as e:
+        # Log the error but continue with the main flow
+        logger.warning(f"Failed to send callback answer: {e}")
     
     # Create anonymity selection keyboard
     builder = InlineKeyboardBuilder()
@@ -106,10 +123,18 @@ async def feedback_course_selected(callback: CallbackQuery, state: FSMContext):
     builder.add(InlineKeyboardButton(text="👤 С указанием имени", callback_data="fb_anonymity:named"))
     builder.adjust(1)  # Each button in separate row (full width)
     
-    await callback.message.edit_text(
-        "Как вы хотите отправить отзыв?",
-        reply_markup=builder.as_markup()
-    )
+    try:
+        await callback.message.edit_text(
+            "Как вы хотите отправить отзыв?",
+            reply_markup=builder.as_markup()
+        )
+    except Exception as e:
+        logger.error(f"Failed to edit message for anonymity selection: {e}")
+        # If editing fails, send a new message instead
+        await callback.message.answer(
+            "Как вы хотите отправить отзыв?",
+            reply_markup=builder.as_markup()
+        )
 
 @router.callback_query(FeedbackStates.selecting_anonymity, F.data.startswith("fb_anonymity:"))
 async def feedback_anonymity_selected(callback: CallbackQuery, state: FSMContext):
@@ -117,7 +142,10 @@ async def feedback_anonymity_selected(callback: CallbackQuery, state: FSMContext
     try:
         anonymity_choice = callback.data.split(":")[1]
     except (IndexError, ValueError):
-        await callback.answer("Ошибка при выборе анонимности.", show_alert=True)
+        try:
+            await callback.answer("Ошибка при выборе анонимности.", show_alert=True)
+        except Exception as e:
+            logger.warning(f"Failed to send error callback answer: {e}")
         return
 
     is_anonymous = (anonymity_choice == "anonymous")
@@ -125,10 +153,19 @@ async def feedback_anonymity_selected(callback: CallbackQuery, state: FSMContext
     await state.set_state(FeedbackStates.topic)
     
     anonymity_text = "анонимно" if is_anonymous else "с указанием имени"
-    await callback.answer(f"Отзыв будет отправлен {anonymity_text}")
+    # Try to send callback answer, but don't let network issues stop the flow
+    try:
+        await callback.answer(f"Отзыв будет отправлен {anonymity_text}")
+    except Exception as e:
+        logger.warning(f"Failed to send callback answer: {e}")
     
     # Edit the original message to remove buttons and ask for topic
-    await callback.message.edit_text("Укажите тему для отзыва:")
+    try:
+        await callback.message.edit_text("Укажите тему для отзыва:")
+    except Exception as e:
+        logger.error(f"Failed to edit message for topic input: {e}")
+        # If editing fails, send a new message instead
+        await callback.message.answer("Укажите тему для отзыва:")
 
 
 @router.message(FeedbackStates.topic, F.text)
@@ -196,11 +233,14 @@ async def feedback_save(msg: Message, state: FSMContext, bot: Bot):
             "text": msg.text.strip()
         }
         
-        # Save to Google Sheets asynchronously
-        sheets_result = await sheets_manager.add_feedback(feedback_data)
-        if not sheets_result:
-            logger.error(f"Failed to save feedback to Google Sheets for user {user_id}")
-            # We don't notify the user of this error since the DB save was successful
+        # Save to Google Sheets asynchronously (if available)
+        if sheets_manager:
+            sheets_result = await sheets_manager.add_feedback(feedback_data)
+            if not sheets_result:
+                logger.error(f"Failed to save feedback to Google Sheets for user {user_id}")
+                # We don't notify the user of this error since the DB save was successful
+        else:
+            logger.warning(f"Google Sheets integration not available, skipping for user {user_id}")
         
         # Send notification to curators of this course
         try:

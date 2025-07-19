@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     )
 
     # ── Google Sheets ─────────────────────────────────────────
-    gsheet_id: str = Field(..., env="GSHEET_ID")
+    # gsheet_id: str = Field(..., env="GSHEET_ID")
     google_credentials_path: str = Field(
         "gen-lang-client-0435735157-04b6dc045b7b.json", env="GOOGLE_CREDENTIALS_PATH"
     )
